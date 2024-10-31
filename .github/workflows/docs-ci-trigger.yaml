@@ -11,8 +11,8 @@ jobs:
   trigger_downstream_workflow:
     uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test-netops-docs-workflow
     with:
-      #owner: heyvister1
-      #repo: network-operator-docs
-      git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
+      #git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
+      ref_name: ${{ github.ref_name }}
+      ref_type: ${{ github.ref_type }} 
     secrets:
       token: ${{ secrets.GH_TOKEN_NVIDIA_CI_CD }}    
