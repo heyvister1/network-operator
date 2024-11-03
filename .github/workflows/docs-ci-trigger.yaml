@@ -16,8 +16,9 @@ jobs:
     uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test-netops-docs-workflow
     with:
       git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
-      ref_name: ${{ github.ref_name }}
-      ref_type: ${{ github.ref_type }} 
-      event_type: ${{ github.event_name }}
-    secrets:
-      token: ${{ secrets.GH_TOKEN_NVIDIA_CI_CD }}    
+      #ref_name: ${{ github.ref_name }}
+      #ref_type: ${{ github.ref_type }} 
+      #event_type: ${{ github.event_name }}
+    secrets: inherit      
+    #secrets:
+    #  token: ${{ secrets.GH_TOKEN_NVIDIA_CI_CD }}    
