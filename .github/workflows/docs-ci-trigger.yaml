@@ -7,7 +7,7 @@ on:
 
 jobs:
   trigger_downstream_workflow:
-    uses: Mellanox/network-operator-docs/.github/workflows/docs-ci.yaml@main
+    uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@fix-failed-doc-ci
     with:
       git_tag: ${{ github.ref_name }}
     secrets: inherit
