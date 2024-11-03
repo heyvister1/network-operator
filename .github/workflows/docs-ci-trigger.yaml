@@ -2,20 +2,17 @@ name: Documentation CI - call downstream workflow
 
 on:
   push:
-    #branches:
-    #- test-netops-docs-workflow
     paths:
-    - manifests/**
+    - deployment/**/values.yaml
   pull_request:
     paths:
-    - manifests/**    
+    - deployment/**/values.yaml
 
 jobs:
   trigger_downstream_workflow:
-    #if: ${{ github.event_name == 'pull_request' }}
     uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test-netops-docs-workflow
-    with:
-      git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
+    #with:
+      #git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
       #ref_name: ${{ github.ref_name }}
       #ref_type: ${{ github.ref_type }} 
       #event_type: ${{ github.event_name }}
