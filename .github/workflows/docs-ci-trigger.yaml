@@ -6,9 +6,13 @@ on:
     #- test-netops-docs-workflow
     paths:
     - manifests/**
+  pull_request:
+    paths:
+    - manifests/**    
 
 jobs:
   trigger_downstream_workflow:
+    if: ${{ github.event_name == 'pull_request' }}
     uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test-netops-docs-workflow
     with:
       #git_tag: v24.10.0-beta.4 #${{ github.ref_name }}
