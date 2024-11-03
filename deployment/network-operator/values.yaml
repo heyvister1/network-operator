@@ -15,7 +15,7 @@
 # Default values for network-operator.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
-# TODO: For test 3
+# TODO: For test 6
 nfd:
   # -- Deploy Node Feature Discovery operator.
   enabled: true
