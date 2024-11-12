@@ -1,9 +1,9 @@
 name: Documentation CI - call downstream workflow
 
 on:
-  push:
-    paths:
-    - deployment/**/values.yaml
+  #push:
+  #  paths:
+  #  - deployment/**/values.yaml
   pull_request:
     paths:
     - deployment/**/values.yaml
