@@ -15,5 +15,6 @@ jobs:
   trigger_downstream_workflow:
     uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test-netops-docs-workflow
     secrets: inherit      
+    
     #secrets:
     #  token: ${{ secrets.GH_TOKEN_NVIDIA_CI_CD }}    
