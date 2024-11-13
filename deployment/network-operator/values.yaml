@@ -18,7 +18,7 @@
 # TODO: For test 40
 nfd:
   # -- Deploy Node Feature Discovery operator.
-  enabled: true
+  enabled: false
   # -- Deploy Node Feature Rules to label the nodes with the discovered features.
   deployNodeFeatureRules: false
 
