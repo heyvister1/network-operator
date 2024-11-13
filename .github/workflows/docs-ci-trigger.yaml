@@ -9,7 +9,8 @@ on:
     - synchronize
     - edit 
     paths:
-    - deployment/**/values.yaml 
+    - deployment/**/values.yaml
+    - deployment/network-operator/values.yaml
 
 jobs:
   trigger_downstream_workflow:
