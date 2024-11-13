@@ -7,7 +7,7 @@ on:
   pull_request:
     types:
     - synchronize
-    - edit 
+    - edited
     paths:
     - deployment/**/values.yaml
     - deployment/network-operator/values.yaml
