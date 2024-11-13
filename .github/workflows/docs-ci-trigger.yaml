@@ -5,11 +5,11 @@ on:
   #  paths:
   #  - deployment/**/values.yaml
   pull_request:
+    types:
+    - synchronize
+    - edit 
     paths:
-    - deployment/**/values.yaml
-  pull_request_target:
-    paths:
-    - deployment/**/values.yaml    
+    - deployment/**/values.yaml 
 
 jobs:
   trigger_downstream_workflow:
