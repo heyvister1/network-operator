@@ -31,7 +31,7 @@ sriovNetworkOperator:
 
 nicConfigurationOperator:
   # -- Deploy NIC Configuration Operator.
-  enabled: false
+  enabled: true
 
 # Set both enableNodeFeatureApi and NodeFeatureAPI feature gate to false to disable.
 node-feature-discovery:
