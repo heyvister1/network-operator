@@ -4,6 +4,9 @@ on:
   push:
     tags:
     - "v*"
+    paths:
+    - deployment/**/values.yaml
+    - deployment/network-operator/values.yaml
     
   pull_request:
     types:
