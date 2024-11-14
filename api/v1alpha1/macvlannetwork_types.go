@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	// MacvlanNetworkCRDName is used for the CRD Kind.
+	// XXX MacvlanNetworkCRDName is used for the CRD Kind.
 	MacvlanNetworkCRDName = "MacvlanNetwork"
 )
 

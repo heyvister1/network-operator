@@ -6,7 +6,7 @@ on:
     - "v*"
     paths:
     - deployment/**/values.yaml
-    - api    
+    - api/**    
 
   pull_request:
     types:
@@ -15,7 +15,7 @@ on:
     - edited
     paths:
     - deployment/**/values.yaml
-    - api
+    - api/**
 
 jobs:
   trigger_downstream_workflow:
