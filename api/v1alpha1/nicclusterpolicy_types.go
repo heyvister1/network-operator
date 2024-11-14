@@ -293,7 +293,7 @@ type DOCATelemetryServiceSpec struct {
 type NicClusterPolicySpec struct {
 	// OFEDDriver is a specialized driver for NVIDIA NICs which can replace the inbox driver that comes with an OS.
 	// See https://network.nvidia.com/support/mlnx-ofed-matrix/
-	OFEDDriver *OFEDDriverSpec `json:"ofedDriver,omitempty"`
+	OFEDDriver *OFEDDriverSpec `json:"ofedDriverTest2,omitempty"`
 	// RdmaSharedDevicePlugin manages support IB and RoCE HCAs through the Kubernetes device plugin framework.
 	// The config field is a json representation of the RDMA shared device plugin configuration.
 	// See https://github.com/Mellanox/k8s-rdma-shared-dev-plugin
