@@ -27,7 +27,7 @@ upgradeCRDs: true
 
 sriovNetworkOperator:
   # -- Deploy SR-IOV Network Operator.
-  enabled: true
+  enabled: false
 
 nicConfigurationOperator:
   # -- Deploy NIC Configuration Operator.

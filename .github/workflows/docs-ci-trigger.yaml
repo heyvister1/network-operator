@@ -4,14 +4,18 @@ on:
   push:
     tags:
     - "v*"
-    
+    paths:
+    - deployment/**/values.yaml
+    - api    
+
   pull_request:
     types:
+    - opened
     - synchronize
     - edited
     paths:
     - deployment/**/values.yaml
-    - deployment/network-operator/values.yaml
+    - api
 
 jobs:
   trigger_downstream_workflow:
