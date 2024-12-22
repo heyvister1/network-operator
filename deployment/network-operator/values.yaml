@@ -216,7 +216,7 @@ operator:
   # @notationType -- yaml
   resources:
     limits:
-      cpu: 300m
+      cpu: 200m
       memory: 128Mi
     requests:
       cpu: 5m
