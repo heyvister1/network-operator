@@ -19,5 +19,5 @@ on:
 
 jobs:
   trigger_downstream_workflow:
-    uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@test_gh_token_changes
+    uses: heyvister1/network-operator-docs/.github/workflows/docs-ci.yaml@fix-non-propagated-gh-token
     secrets: inherit
