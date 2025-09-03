@@ -25,6 +25,7 @@ import (
 
 	maintenancev1alpha1 "github.com/Mellanox/maintenance-operator/api/v1alpha1"
 	netattdefv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	osconfigv1 "github.com/openshift/api/config/v1"
@@ -37,6 +38,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mellanoxcomv1alpha1 "github.com/Mellanox/network-operator/api/v1alpha1"
 	"github.com/Mellanox/network-operator/pkg/clustertype"
@@ -68,6 +71,31 @@ func (d *mockImageProvider) TagExists(_ string) (bool, error) {
 }
 
 func (d *mockImageProvider) SetImageSpec(*mellanoxcomv1alpha1.ImageSpec) {}
+
+func setupK8sManagerForTest() (manager.Manager, error) {
+	k8sManager, err := ctrl.NewManager(k8sConfig, ctrl.Options{
+		Scheme:  scheme.Scheme,
+		Metrics: server.Options{BindAddress: "0"}, // we don't need metrics server for tests
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.SriovNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
+		return []string{o.(*sriovnetworkv1.SriovNetwork).Spec.NetworkNamespace}
+	})
+
+	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.SriovIBNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
+		return []string{o.(*sriovnetworkv1.SriovIBNetwork).Spec.NetworkNamespace}
+	})
+
+	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.OVSNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
+		return []string{o.(*sriovnetworkv1.OVSNetwork).Spec.NetworkNamespace}
+	})
+
+	return k8sManager, nil
+}
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
