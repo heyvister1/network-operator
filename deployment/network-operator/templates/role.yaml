@@ -336,3 +336,9 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - sriovnetwork.openshift.io
+  resources:
+  - '*'
+  verbs:
+  - '*'  

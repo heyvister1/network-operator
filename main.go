@@ -24,6 +24,8 @@ import (
 
 	"github.com/NVIDIA/k8s-operator-libs/pkg/upgrade"
 	netattdefv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 	osconfigv1 "github.com/openshift/api/config/v1"
 	imagev1 "github.com/openshift/api/image/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -50,6 +52,9 @@ import (
 	"github.com/Mellanox/network-operator/pkg/migrate"
 	"github.com/Mellanox/network-operator/pkg/staticconfig"
 	"github.com/Mellanox/network-operator/version"
+	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
+	corev1 "k8s.io/api/core/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -66,6 +71,7 @@ func init() {
 	utilruntime.Must(osconfigv1.AddToScheme(scheme))
 	utilruntime.Must(imagev1.AddToScheme(scheme))
 	utilruntime.Must(maintenancev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(sriovnetworkv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -204,6 +210,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	err = setupDrainController(mgr, migrationCompletionChan)
+	if err != nil {
+		os.Exit(1)
+	}
+
 	if os.Getenv("ENABLE_WEBHOOKS") == "true" {
 		if err := setupWebhookControllers(mgr); err != nil {
 			os.Exit(1)
@@ -254,5 +265,45 @@ func setupUpgradeController(mgr ctrl.Manager, migrationChan chan struct{}) error
 		setupLog.Error(err, "unable to create controller", "controller", "Upgrade")
 		return err
 	}
+	return nil
+}
+
+func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
+	restConfig := ctrl.GetConfigOrDie()
+	// Initial global info
+	vars.Config = restConfig
+	vars.Namespace = "nvidia-network-operator"
+	// we need a client that doesn't use the local cache for the objects
+	drainKClient, err := client.New(restConfig, client.Options{
+		Scheme: scheme,
+		Cache: &client.CacheOptions{
+			DisableFor: []client.Object{
+				&sriovnetworkv1.SriovNetworkNodeState{},
+				&corev1.Node{},
+				&mcfgv1.MachineConfigPool{},
+			},
+		},
+	})
+	_ = drainKClient
+	if err != nil {
+		setupLog.Error(err, "unable to create drain kubernetes client")
+		os.Exit(1)
+	}
+
+	platformsHelper, err := platforms.NewDefaultPlatformHelper()
+	drainController, err := controllers.NewDrainReconcileController(drainKClient, /*mgr.GetClient()*/
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("SR-IOV operator"),
+		platformsHelper)
+	if err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DrainReconcile")
+		os.Exit(1)
+	}
+
+	if err = drainController.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to setup controller with manager", "controller", "DrainReconcile")
+		os.Exit(1)
+	}
+
 	return nil
 }
