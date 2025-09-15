@@ -28,7 +28,10 @@ import (
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	openshiftconfigv1 "github.com/openshift/api/config/v1"
 	osconfigv1 "github.com/openshift/api/config/v1"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -39,11 +42,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mellanoxcomv1alpha1 "github.com/Mellanox/network-operator/api/v1alpha1"
 	"github.com/Mellanox/network-operator/pkg/clustertype"
 	"github.com/Mellanox/network-operator/pkg/staticconfig"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -57,9 +60,11 @@ const (
 )
 
 var (
+	ctx                context.Context
 	k8sClient          client.Client
 	k8sConfig          *rest.Config
 	testEnv            *envtest.Environment
+	k8sManager         manager.Manager
 	k8sManagerCancelFn context.CancelFunc
 )
 
@@ -72,15 +77,15 @@ func (d *mockImageProvider) TagExists(_ string) (bool, error) {
 
 func (d *mockImageProvider) SetImageSpec(*mellanoxcomv1alpha1.ImageSpec) {}
 
-func setupK8sManagerForTest() (manager.Manager, error) {
-	k8sManager, err := ctrl.NewManager(k8sConfig, ctrl.Options{
-		Scheme:  scheme.Scheme,
-		Metrics: server.Options{BindAddress: "0"}, // we don't need metrics server for tests
-	})
+func setupK8sManagerForTest(k8sManager manager.Manager) error {
+	//k8sManager, err := ctrl.NewManager(k8sConfig, ctrl.Options{
+	//	Scheme:  scheme.Scheme,
+	//	Metrics: server.Options{BindAddress: "0"}, // we don't need metrics server for tests
+	//})
 
-	if err != nil {
-		return nil, err
-	}
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.SriovNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
 		return []string{o.(*sriovnetworkv1.SriovNetwork).Spec.NetworkNamespace}
@@ -94,7 +99,7 @@ func setupK8sManagerForTest() (manager.Manager, error) {
 		return []string{o.(*sriovnetworkv1.OVSNetwork).Spec.NetworkNamespace}
 	})
 
-	return k8sManager, nil
+	return nil
 }
 
 func TestAPIs(t *testing.T) {
@@ -118,6 +123,7 @@ var _ = BeforeSuite(func() {
 			filepath.Join("config", "crd", "bases"),
 			filepath.Join("hack", "crds"),
 			filepath.Join("deployment", "network-operator", "charts", "maintenance-operator-chart", "crds"),
+			filepath.Join("deployment", "network-operator", "charts", "sriov-network-operator", "crds"),
 		},
 	}
 
@@ -137,7 +143,23 @@ var _ = BeforeSuite(func() {
 	err = maintenancev1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = sriovnetworkv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = netattdefv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = mcfgv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = openshiftconfigv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	//err = monitoringv1.AddToScheme(scheme.Scheme)
+	//Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:scheme
+
+	// Set global vars for use by controllers
+	vars.Config = k8sConfig
+	vars.Scheme = scheme.Scheme
+	vars.Namespace = namespaceName
 
 	k8sClient, err = client.New(k8sConfig, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
@@ -150,7 +172,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	// Start controllers
-	k8sManager, err := ctrl.NewManager(k8sConfig, ctrl.Options{
+	k8sManager, err = ctrl.NewManager(k8sConfig, ctrl.Options{
 		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
@@ -195,7 +217,7 @@ var _ = BeforeSuite(func() {
 
 	go func() {
 		defer GinkgoRecover()
-		var ctx context.Context
+
 		ctx, k8sManagerCancelFn = context.WithCancel(ctrl.SetupSignalHandler())
 		err = k8sManager.Start(ctx)
 		Expect(err).ToNot(HaveOccurred())

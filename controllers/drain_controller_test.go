@@ -2,7 +2,6 @@ package controllers //nolint:dupl
 
 import (
 	"context"
-	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -32,12 +31,12 @@ const testNamespace = "nvidia-network-operator"
 
 var _ = Describe("Drain Controller", Ordered, func() {
 
-	var cancel context.CancelFunc
-	var ctx context.Context
+	//var cancel context.CancelFunc
+	//var ctx context.Context
 
 	BeforeAll(func() {
 		By("Setup controller manager")
-		k8sManager, err := setupK8sManagerForTest()
+		err := setupK8sManagerForTest(k8sManager)
 		Expect(err).ToNot(HaveOccurred())
 
 		t := GinkgoT()
@@ -70,23 +69,23 @@ var _ = Describe("Drain Controller", Ordered, func() {
 		err = drainController.SetupWithManager(k8sManager)
 		Expect(err).ToNot(HaveOccurred())
 
-		ctx, cancel = context.WithCancel(context.Background())
+		//ctx, cancel = context.WithCancel(context.Background())
 
-		wg := sync.WaitGroup{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer GinkgoRecover()
-			By("Start controller manager")
-			err := k8sManager.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
-		}()
-
-		DeferCleanup(func() {
-			By("Shutdown controller manager")
-			cancel()
-			wg.Wait()
-		})
+		//wg := sync.WaitGroup{}
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	defer GinkgoRecover()
+		//	By("Start controller manager")
+		//	err := k8sManager.Start(ctx)
+		//	Expect(err).ToNot(HaveOccurred())
+		//}()
+		//
+		//DeferCleanup(func() {
+		//	By("Shutdown controller manager")
+		//	cancel()
+		//	wg.Wait()
+		//})
 
 		err = k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"}})
 		Expect(err).ToNot(HaveOccurred())
