@@ -46,26 +46,60 @@ import (
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 )
 
+// TODO:
+// 1. How does configuration is being propagated to drain controller?
+// createDrainHelper @ drainer.go
+/*
+	drainer := &drain.Helper{
+		Client:              kubeClient,
+		Force:               true,
+		IgnoreAllDaemonSets: true,
+		DeleteEmptyDirData:  true,
+		GracePeriodSeconds:  -1,
+		Timeout:             DrainTimeOut,
+		OnPodDeletionOrEvictionFinished: func(pod *corev1.Pod, usingEviction bool, err error) {
+			if err != nil {
+				verbStr := constants.DrainDelete
+				if usingEviction {
+					verbStr = constants.DrainEvict
+				}
+				logger.Error(err, fmt.Sprintf("failed to %s pod %s/%s from node", verbStr, pod.Namespace, pod.Name))
+				return
+			}
+*/
+// 2. Make sure that drain controller reconciles on node maintenance object changes
+// 3. Make sure to delete all existing node maintenance objects when network-operator is deleted
+// 4. drain controller (reconcile) should watch for nodeMaintenance "ready" then is should annotate "drain-complete"
+
 type DrainReconcile struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	recorder record.EventRecorder
-	drainer  drain.DrainInterface
+	Scheme           *runtime.Scheme
+	recorder         record.EventRecorder
+	drainer          drain.DrainInterface
+	drainerRequestor *DrainRequestor
 
 	drainCheckMutex sync.Mutex
 }
 
-func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, recorder record.EventRecorder, platformHelper platforms.Interface) (*DrainReconcile, error) {
+func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, recorder record.EventRecorder,
+	platformHelper platforms.Interface, log logr.Logger) (*DrainReconcile, error) {
 	drainer, err := drain.NewDrainer(platformHelper)
 	if err != nil {
 		return nil, err
 	}
+	drainerRequestor, err := NewDrainRequestor(client, log, platformHelper)
+	if err != nil {
+		return nil, err
+	}
+
+	drainer = drainerRequestor
 
 	return &DrainReconcile{
 		client,
 		Scheme,
 		recorder,
 		drainer,
+		drainerRequestor,
 		sync.Mutex{}}, nil
 }
 
@@ -206,11 +240,14 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	}
 
+	requestorOpts := GetRequestorOptsFromEnvs()
 	// Watch for spec and annotation changes
 	nodePredicates := builder.WithPredicates(DrainAnnotationPredicate{})
 	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{})
-
-	return ctrl.NewControllerManagedBy(mgr).
+	// TODO: Make sure there is once logger instance to be used for all the predicates
+	nodeMaintenancePredicates := builder.WithPredicates(NewConditionChangedPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
+		requestorOpts.MaintenanceOPRequestorID))
+	m := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
 			LogConstructor: func(request *reconcile.Request) logr.Logger {
@@ -223,6 +260,8 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 			},
 		}).
 		For(&corev1.Node{}, nodePredicates).
-		Watches(&sriovnetworkv1.SriovNetworkNodeState{}, createUpdateEnqueue, nodeStatePredicates).
-		Complete(dr)
+		Watches(&sriovnetworkv1.SriovNetworkNodeState{}, createUpdateEnqueue,
+			nodeMaintenancePredicates, nodePredicates, nodeStatePredicates)
+
+	return m.Complete(dr)
 }
