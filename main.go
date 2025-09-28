@@ -291,10 +291,12 @@ func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
 	}
 
 	platformsHelper, err := platforms.NewDefaultPlatformHelper()
-	drainController, err := controllers.NewDrainReconcileController(drainKClient, /*mgr.GetClient()*/
+	drainController, err := controllers.NewDrainReconcileController(
+		drainKClient, /*mgr.GetClient()*/
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("SR-IOV operator"),
-		platformsHelper)
+		platformsHelper,
+		mgr.GetLogger().WithValues("Function", "Drain"))
 	if err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DrainReconcile")
 		os.Exit(1)

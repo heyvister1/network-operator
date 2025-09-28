@@ -70,6 +70,12 @@ func (dr *DrainReconcile) handleNodeIdleNodeStateDrainingOrCompleted(ctx context
 		return reconcile.Result{RequeueAfter: constants.DrainControllerRequeueTime}, nil
 	}
 
+	// check if node annotation is already set to drain idle
+	if utils.ObjectHasAnnotation(nodeNetworkState, constants.NodeStateDrainAnnotationCurrent, constants.DrainIdle) {
+		reqLogger.Info("node annotation is already set to drain idle, nothing to do")
+		return ctrl.Result{}, nil
+	}
+
 	// move the node state back to idle
 	err = utils.AnnotateObject(ctx, nodeNetworkState, constants.NodeStateDrainAnnotationCurrent, constants.DrainIdle, dr.Client)
 	if err != nil {

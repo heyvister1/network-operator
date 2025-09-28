@@ -2,106 +2,62 @@ package controllers //nolint:dupl
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
-
+	maintenancev1alpha1 "github.com/Mellanox/maintenance-operator/api/v1alpha1"
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	constants "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
-	mock_platforms "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/mock"
-	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/openshift"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/utils"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 )
 
-// Define utility constants for object names and testing timeouts/durations and intervals.
-const testNamespace = "nvidia-network-operator"
+var (
+	drainRequestorID = "drain.requestor.com"
+	drainRequestorNS = "default"
+)
 
 var _ = Describe("Drain Controller", Ordered, func() {
 
-	//var cancel context.CancelFunc
-	//var ctx context.Context
-
 	BeforeAll(func() {
-		By("Setup controller manager")
-		err := setupK8sManagerForTest(k8sManager)
-		Expect(err).ToNot(HaveOccurred())
-
-		t := GinkgoT()
-		mockCtrl := gomock.NewController(t)
-		platformHelper := mock_platforms.NewMockInterface(mockCtrl)
-		platformHelper.EXPECT().GetFlavor().Return(openshift.OpenshiftFlavorDefault).AnyTimes()
-		platformHelper.EXPECT().IsOpenshiftCluster().Return(false).AnyTimes()
-		platformHelper.EXPECT().IsHypershift().Return(false).AnyTimes()
-		platformHelper.EXPECT().OpenshiftBeforeDrainNode(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
-		platformHelper.EXPECT().OpenshiftAfterCompleteDrainNode(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
-
-		// we need a client that doesn't use the local cache for the objects
-		drainKClient, err := client.New(k8sConfig, client.Options{
-			Scheme: scheme.Scheme,
-			Cache: &client.CacheOptions{
-				DisableFor: []client.Object{
-					&sriovnetworkv1.SriovNetworkNodeState{},
-					&corev1.Node{},
-					&mcfgv1.MachineConfigPool{},
-				},
-			},
+		By("Setup maintennace controller mock")
+		mockNodeMaintenanceController(ctx, k8sClient, metav1.Condition{
+			Type:               maintenancev1alpha1.ConditionTypeReady,
+			Status:             v1.ConditionTrue,
+			Reason:             maintenancev1alpha1.ConditionReasonReady,
+			Message:            "Maintenance completed successfully",
+			LastTransitionTime: v1.NewTime(time.Now()),
 		})
-		Expect(err).ToNot(HaveOccurred())
 
-		drainController, err := NewDrainReconcileController(drainKClient,
-			k8sManager.GetScheme(),
-			k8sManager.GetEventRecorderFor("operator"),
-			platformHelper)
-		Expect(err).ToNot(HaveOccurred())
-		err = drainController.SetupWithManager(k8sManager)
-		Expect(err).ToNot(HaveOccurred())
-
-		//ctx, cancel = context.WithCancel(context.Background())
-
-		//wg := sync.WaitGroup{}
-		//wg.Add(1)
-		//go func() {
-		//	defer wg.Done()
-		//	defer GinkgoRecover()
-		//	By("Start controller manager")
-		//	err := k8sManager.Start(ctx)
-		//	Expect(err).ToNot(HaveOccurred())
-		//}()
-		//
-		//DeferCleanup(func() {
-		//	By("Shutdown controller manager")
-		//	cancel()
-		//	wg.Wait()
-		//})
-
-		err = k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"}})
+		err := k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"}})
 		Expect(err).ToNot(HaveOccurred())
 	})
 
 	BeforeEach(func() {
 		Expect(k8sClient.DeleteAllOf(context.Background(), &corev1.Node{}, &client.DeleteAllOfOptions{DeleteOptions: client.DeleteOptions{GracePeriodSeconds: pointer.Int64(0)}})).ToNot(HaveOccurred())
 		Expect(k8sClient.DeleteAllOf(context.Background(), &sriovnetworkv1.SriovNetworkNodeState{}, client.InNamespace(vars.Namespace), &client.DeleteAllOfOptions{DeleteOptions: client.DeleteOptions{GracePeriodSeconds: pointer.Int64(0)}})).ToNot(HaveOccurred())
-		Expect(k8sClient.DeleteAllOf(context.Background(), &corev1.Pod{}, client.InNamespace(testNamespace), &client.DeleteAllOfOptions{DeleteOptions: client.DeleteOptions{GracePeriodSeconds: pointer.Int64(0)}})).ToNot(HaveOccurred())
+		Expect(k8sClient.DeleteAllOf(context.Background(), &corev1.Pod{}, client.InNamespace(namespaceName), &client.DeleteAllOfOptions{DeleteOptions: client.DeleteOptions{GracePeriodSeconds: pointer.Int64(0)}})).ToNot(HaveOccurred())
 
 		poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-		poolConfig.SetNamespace(testNamespace)
+		poolConfig.SetNamespace(namespaceName)
 		poolConfig.SetName("test-workers")
 		err := k8sClient.Delete(context.Background(), poolConfig)
 		if err != nil {
-			Expect(errors.IsNotFound(err)).To(BeTrue())
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
 		}
 
 		podList := &corev1.PodList{}
@@ -128,6 +84,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 			expectNodeStateAnnotation(nodeState, constants.DrainIdle)
 			expectNodeIsSchedulable(node)
+
 		})
 
 		It("should not drain on reboot for single node", func(ctx context.Context) {
@@ -207,7 +164,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 			maxun := intstr.Parse("2")
 			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(testNamespace)
+			poolConfig.SetNamespace(namespaceName)
 			poolConfig.SetName("test-workers")
 			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -258,7 +215,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 			maxun := intstr.Parse("2")
 			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(testNamespace)
+			poolConfig.SetNamespace(namespaceName)
 			poolConfig.SetName("test-workers")
 			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -282,7 +239,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 			node3, nodeState3 := createNode(ctx, "node3")
 
 			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(testNamespace)
+			poolConfig.SetNamespace(namespaceName)
 			poolConfig.SetName("test-workers")
 			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: nil, NodeSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -311,7 +268,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 			maxun := intstr.Parse("1")
 			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(testNamespace)
+			poolConfig.SetNamespace(namespaceName)
 			poolConfig.SetName("test-workers")
 			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -335,7 +292,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 			maxun := intstr.Parse("10")
 			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(testNamespace)
+			poolConfig.SetNamespace(namespaceName)
 			poolConfig.SetName("test-workers")
 			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun}
 			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
@@ -475,4 +432,106 @@ func createPodOnNode(ctx context.Context, podName, nodeName string) {
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "test", Image: "test", Command: []string{"test"}}},
 			NodeName: nodeName, TerminationGracePeriodSeconds: pointer.Int64(60)}}
 	Expect(k8sClient.Create(ctx, &pod)).ToNot(HaveOccurred())
+}
+
+func mockNodeMaintenanceController(
+	ctx context.Context,
+	c client.Client,
+	desiredCondition metav1.Condition,
+) {
+	go func() {
+		defer GinkgoRecover()
+
+		// Create a rate-limited work queue
+		queue := workqueue.NewNamedRateLimitingQueue(
+			workqueue.NewItemExponentialFailureRateLimiter(100*time.Millisecond, 5*time.Second),
+			"nodeMaintenance",
+		)
+		defer queue.ShutDown()
+
+		// Add initial work item to start polling
+		queue.Add("poll")
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				item, shutdown := queue.Get()
+				if shutdown {
+					return
+				}
+
+				// Process work item directly (no second goroutine)
+				func() {
+					defer queue.Done(item)
+
+					// Process the polling work
+					nms := &maintenancev1alpha1.NodeMaintenanceList{}
+					err := c.List(ctx, nms, client.InNamespace(drainRequestorNS))
+					if err != nil {
+						return
+					}
+
+					processItems(ctx, c, nms, desiredCondition)
+					// Re-queue for next poll (success case)
+					queue.AddAfter("poll", 100*time.Millisecond)
+				}()
+			}
+		}
+	}()
+}
+
+func processItems(ctx context.Context, c client.Client,
+	nms *maintenancev1alpha1.NodeMaintenanceList, desiredCondition metav1.Condition) {
+	// Process each NodeMaintenance object
+	for _, nm := range nms.Items {
+		if nm.Spec.RequestorID != drainRequestorID {
+			continue
+		}
+
+		// Handle deletion case
+		if !nm.DeletionTimestamp.IsZero() {
+			By("maintenance operator: remove finalizer")
+			if controllerutil.ContainsFinalizer(&nm, maintenancev1alpha1.MaintenanceFinalizerName) {
+				//Expect(controllerutil.RemoveFinalizer(&nm, maintenancev1alpha1.MaintenanceFinalizerName)).To(Succeed())
+				original := nm.DeepCopy()
+				nm.SetFinalizers([]string{})
+				patch := client.MergeFrom(original)
+				Expect(c.Patch(ctx, &nm, patch)).To(Succeed())
+			}
+
+			// uncordon node
+			By("maintenance operator: uncordon node")
+			node := &corev1.Node{}
+			Expect(c.Get(ctx, types.NamespacedName{Name: nm.Name}, node)).ToNot(HaveOccurred())
+			node.Spec.Unschedulable = false
+			Expect(c.Update(ctx, node)).NotTo(Succeed())
+			continue
+		}
+
+		// Handle creation/update case
+		if !controllerutil.ContainsFinalizer(&nm, maintenancev1alpha1.MaintenanceFinalizerName) {
+			By("maintenance operator: add finalizer")
+			nm.Finalizers = append(nm.Finalizers, maintenancev1alpha1.MaintenanceFinalizerName)
+			Expect(c.Update(ctx, &nm)).To(Succeed())
+			continue
+		}
+
+		// Update status conditions
+		if nm.Status.Conditions == nil {
+			Expect(nm.Finalizers).To(ContainElement(maintenancev1alpha1.MaintenanceFinalizerName))
+			// Update status conditions
+			meta.SetStatusCondition(&nm.Status.Conditions, desiredCondition)
+			Expect(c.Status().Update(ctx, &nm)).To(Succeed())
+			Expect(nm.Status.Conditions).To(HaveLen(1))
+
+			// cordon node
+			By("maintenance operator: cordon node")
+			node := &corev1.Node{}
+			Expect(c.Get(ctx, types.NamespacedName{Name: nm.Name}, node)).ToNot(HaveOccurred())
+			node.Spec.Unschedulable = true
+			Expect(c.Update(ctx, node)).To(Succeed())
+		}
+	}
 }

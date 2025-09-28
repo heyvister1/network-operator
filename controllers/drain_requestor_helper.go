@@ -19,7 +19,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -29,6 +28,7 @@ import (
 	"github.com/Mellanox/network-operator/api/v1alpha1"
 	"github.com/Mellanox/network-operator/pkg/consts"
 	"github.com/go-logr/logr"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/drain"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 	corev1 "k8s.io/api/core/v1"
@@ -78,7 +78,7 @@ const (
 	// MaintenanceOPEvictionRDMA is a default filter for Network OP pods eviction
 	MaintenanceOPEvictionRDMA = "nvidia.com/rdma*"
 	// DefaultNodeMaintenanceNamePrefix is a default prefix for nodeMaintenance object name
-	DefaultNodeMaintenanceNamePrefix = "sriov-operator-drainer"
+	DefaultNodeMaintenanceNamePrefix = "" //sriov-operator-drainer"
 	// trueString is the word true as string to avoid duplication and linting errors
 	trueString = "true"
 	// DrainTimeOut is the default timeout for the drain operation
@@ -154,6 +154,20 @@ func (p ConditionChangedPredicate) Update(e event.TypedUpdateEvent[client.Object
 	return enqueue
 }
 
+// NewRequestorIDPredicate creates a new predicate that checks if nodeMaintenance object is
+// related to current requestorID, whether owned or shared with current requestorID
+func NewRequestorIDPredicate(log logr.Logger, requestorID string) predicate.Funcs {
+	return predicate.NewPredicateFuncs(func(object client.Object) bool {
+		nm, ok := object.(*maintenancev1alpha1.NodeMaintenance)
+		if !ok {
+			log.Error(nil, "failed to cast object to NodeMaintenance in update event, ignoring event.")
+			return false
+		}
+		// check if requestorID is the owner of the object or if is under AdditionalRequestors list
+		return requestorID == nm.Spec.RequestorID || slices.Contains(nm.Spec.AdditionalRequestors, requestorID)
+	})
+}
+
 func setDefaultNodeMaintenance(opts DrainRequestorOptions,
 	upgradePolicy *v1alpha1.DriverUpgradePolicySpec) {
 	drainSpec := &maintenancev1alpha1.DrainSpec{
@@ -218,14 +232,9 @@ func (d *DrainRequestor) DrainNode(ctx context.Context, node *corev1.Node, fullN
 	// create node maintenance object
 	nm, err := d.newNodeMaintenance(ctx, node.Name)
 	if err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			d.log.V(consts.LogLevelWarning).Info("nodeMaintenance", nm.Name, "already exists")
-			return false, nil
-		}
 		reqLogger.Error(err, "error creating node maintenance")
 		return false, err
 	}
-
 	cond := meta.FindStatusCondition(nm.Status.Conditions, maintenancev1alpha1.ConditionReasonReady)
 	if cond != nil {
 		if cond.Reason == maintenancev1alpha1.ConditionReasonReady {
@@ -245,37 +254,53 @@ func (d *DrainRequestor) CompleteDrainNode(ctx context.Context, node *corev1.Nod
 	logger := ctx.Value("logger").(logr.Logger).WithName("CompleteDrainNode")
 
 	nmName := d.getNodeMaintenanceName(node.Name)
-	// run the un cordon function on the node
-	logger.Info("deleting node maintenance", "nodeMaintenance", nmName)
-	err := d.deleteNodeMaintenance(ctx, node.Name)
+	// run the un cordon function on the node, by deleting node maintenance object
+	// once node maintenance object is actually deleted by maintenance operator,
+	// the node will be uncordoned.
+	err := d.deleteNodeMaintenance(ctx, nmName)
 	if err != nil {
 		logger.Error(
 			err, "failed to delete NodeMaintenance, node uncordon failed", "nodeMaintenance",
 			nmName)
-		if k8serrors.IsNotFound(err) {
-			// call the openshift complete drain to unpause the MCP
-			// only if we are the last draining node in the pool
-			completed, err := d.platformHelpers.OpenshiftAfterCompleteDrainNode(ctx, node)
-			if err != nil {
-				logger.Error(err, "failed to complete openshift draining")
-				return false, err
-			}
-			logger.V(2).Info("CompleteDrainNode:()", "drainCompleted", completed)
-			return completed, nil
-		}
+		return false, err
 	}
-	return false, nil
+
+	// call the openshift complete drain to unpause the MCP
+	// only if we are the last draining node in the pool
+	completed, err := d.platformHelpers.OpenshiftAfterCompleteDrainNode(ctx, node)
+	if err != nil {
+		logger.Error(err, "failed to complete openshift draining")
+		return false, err
+	}
+	//logger.V(2).Info("CompleteDrainNode:()", "drainCompleted", completed)
+	logger.Info("CompleteDrainNode:()", "drainCompleted", completed)
+	return completed, nil
 }
 
 func (d *DrainRequestor) newNodeMaintenance(ctx context.Context, nodeName string) (*maintenancev1alpha1.NodeMaintenance, error) {
-	nm := defaultNodeMaintenance.DeepCopy()
+	nm := &maintenancev1alpha1.NodeMaintenance{}
+	err := d.k8sClient.Get(ctx, types.NamespacedName{Name: nodeName,
+		Namespace: d.opts.MaintenanceOPRequestorNS},
+		nm, &client.GetOptions{})
+	if err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return nm, err
+		}
+	}
+	// check if node maintenance object is already created
+	if nm.GetUID() != "" {
+		return nm, nil
+	}
+
+	d.log.V(consts.LogLevelInfo).Info("Creating", "node maintenance", nm, "namespace", nm.Namespace)
+	nm = defaultNodeMaintenance.DeepCopy()
 	nm.Name = d.getNodeMaintenanceName(nodeName)
 	nm.Spec.NodeName = nodeName
-
-	d.log.V(consts.LogLevelInfo).Info("Creating", "node maintenance", nm.Name)
-	err := d.k8sClient.Create(ctx, nm, &client.CreateOptions{})
+	err = d.k8sClient.Create(ctx, nm, &client.CreateOptions{})
 	if err != nil {
-		return nm, err
+		if !k8serrors.IsAlreadyExists(err) {
+			return nm, err
+		}
 	}
 	return nm, nil
 }
@@ -289,28 +314,41 @@ func (d *DrainRequestor) deleteNodeMaintenance(ctx context.Context,
 		Namespace: d.opts.MaintenanceOPRequestorNS},
 		nm, &client.GetOptions{})
 	if err != nil {
-		return err
+		// we expect returned error to be "NotFound", indicating that node has been already uncordoned
+		// by maintenance operator
+		if !k8serrors.IsNotFound(err) {
+			return err
+		}
 	}
 	if nm.Spec.RequestorID == d.opts.MaintenanceOPRequestorID {
-		d.log.V(consts.LogLevelInfo).Info("deleting node maintenance",
+		d.log.V(consts.LogLevelInfo).Info("Deleting",
 			"nodeMaintenance", client.ObjectKeyFromObject(nm))
 
 		// send deletion request assuming maintenance OP will handle actual obj deletion
-		// avoid deletion if timestamp was already set
+		// avoid deletion if deletion timestamp is already set
 		if nm.DeletionTimestamp == nil {
 			err = d.k8sClient.Delete(ctx, nm)
 			if err != nil {
 				return err
 			}
 		}
-		return nil
 	}
-	return nil
+	return err
 }
 
 // getNodeMaintenanceName returns expected name of the nodeMaintenance object
 func (d *DrainRequestor) getNodeMaintenanceName(nodeName string) string {
-	return fmt.Sprintf("%s-%s", d.opts.NodeMaintenanceNamePrefix, nodeName)
+	//return fmt.Sprintf("%s-%s", d.opts.NodeMaintenanceNamePrefix, nodeName)
+	return nodeName
+}
+
+func GetDrainRequestorOpts(drainer drain.DrainInterface) DrainRequestorOptions {
+	drainRequestor, ok := drainer.(*DrainRequestor)
+	if !ok {
+		return DrainRequestorOptions{}
+	}
+
+	return drainRequestor.opts
 }
 
 // GetRequestorEnvs returns requstor upgrade related options according to provided environment variables
@@ -319,16 +357,16 @@ func GetRequestorOptsFromEnvs() DrainRequestorOptions {
 	if os.Getenv("MAINTENANCE_OPERATOR_ENABLED") == trueString {
 		opts.UseMaintenanceOperator = true
 	}
-	if os.Getenv("MAINTENANCE_OPERATOR_REQUESTOR_NAMESPACE") != "" {
-		opts.MaintenanceOPRequestorNS = os.Getenv("MAINTENANCE_OPERATOR_REQUESTOR_NAMESPACE")
+	if os.Getenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE") != "" {
+		opts.MaintenanceOPRequestorNS = os.Getenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE")
 	} else {
 		opts.MaintenanceOPRequestorNS = "default"
 	}
-	if os.Getenv("MAINTENANCE_OPERATOR_REQUESTOR_ID") != "" {
-		opts.MaintenanceOPRequestorID = os.Getenv("MAINTENANCE_OPERATOR_REQUESTOR_ID")
+	if os.Getenv("DRAIN_CONTROLLER_REQUESTOR_ID") != "" {
+		opts.MaintenanceOPRequestorID = os.Getenv("DRAIN_CONTROLLER_REQUESTOR_ID")
 	}
-	if os.Getenv("MAINTENANCE_OPERATOR_NODE_MAINTENANCE_PREFIX") != "" {
-		opts.NodeMaintenanceNamePrefix = os.Getenv("MAINTENANCE_OPERATOR_NODE_MAINTENANCE_PREFIX")
+	if os.Getenv("DRAIN_CONTROLLER_NODE_MAINTENANCE_PREFIX") != "" {
+		opts.NodeMaintenanceNamePrefix = os.Getenv("DRAIN_CONTROLLER_NODE_MAINTENANCE_PREFIX")
 	} else {
 		opts.NodeMaintenanceNamePrefix = DefaultNodeMaintenanceNamePrefix
 	}

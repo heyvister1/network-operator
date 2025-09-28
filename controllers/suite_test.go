@@ -31,6 +31,7 @@ import (
 	openshiftconfigv1 "github.com/openshift/api/config/v1"
 	osconfigv1 "github.com/openshift/api/config/v1"
 	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
+	"go.uber.org/mock/gomock"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +47,8 @@ import (
 	mellanoxcomv1alpha1 "github.com/Mellanox/network-operator/api/v1alpha1"
 	"github.com/Mellanox/network-operator/pkg/clustertype"
 	"github.com/Mellanox/network-operator/pkg/staticconfig"
+	mock_platforms "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/mock"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/openshift"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 	// +kubebuilder:scaffold:imports
 )
@@ -77,29 +80,36 @@ func (d *mockImageProvider) TagExists(_ string) (bool, error) {
 
 func (d *mockImageProvider) SetImageSpec(*mellanoxcomv1alpha1.ImageSpec) {}
 
-func setupK8sManagerForTest(k8sManager manager.Manager) error {
-	//k8sManager, err := ctrl.NewManager(k8sConfig, ctrl.Options{
-	//	Scheme:  scheme.Scheme,
-	//	Metrics: server.Options{BindAddress: "0"}, // we don't need metrics server for tests
-	//})
+func setupDrainControllerWithManager(k8sManager manager.Manager) {
+	t := GinkgoT()
+	mockCtrl := gomock.NewController(t)
+	platformHelper := mock_platforms.NewMockInterface(mockCtrl)
+	platformHelper.EXPECT().GetFlavor().Return(openshift.OpenshiftFlavorDefault).AnyTimes()
+	platformHelper.EXPECT().IsOpenshiftCluster().Return(false).AnyTimes()
+	platformHelper.EXPECT().IsHypershift().Return(false).AnyTimes()
+	platformHelper.EXPECT().OpenshiftBeforeDrainNode(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+	platformHelper.EXPECT().OpenshiftAfterCompleteDrainNode(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-	//if err != nil {
-	//	return nil, err
-	//}
-
-	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.SriovNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
-		return []string{o.(*sriovnetworkv1.SriovNetwork).Spec.NetworkNamespace}
+	drainKClient, err := client.New(k8sConfig, client.Options{
+		Scheme: scheme.Scheme,
+		Cache: &client.CacheOptions{
+			DisableFor: []client.Object{
+				&sriovnetworkv1.SriovNetworkNodeState{},
+				&corev1.Node{},
+				&mcfgv1.MachineConfigPool{},
+			},
+		},
 	})
+	Expect(err).ToNot(HaveOccurred())
 
-	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.SriovIBNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
-		return []string{o.(*sriovnetworkv1.SriovIBNetwork).Spec.NetworkNamespace}
-	})
-
-	k8sManager.GetCache().IndexField(context.Background(), &sriovnetworkv1.OVSNetwork{}, "spec.networkNamespace", func(o client.Object) []string {
-		return []string{o.(*sriovnetworkv1.OVSNetwork).Spec.NetworkNamespace}
-	})
-
-	return nil
+	drainController, err := NewDrainReconcileController(drainKClient,
+		k8sManager.GetScheme(),
+		k8sManager.GetEventRecorderFor("operator"),
+		platformHelper,
+		k8sManager.GetLogger().WithValues("Function", "Drain"))
+	Expect(err).ToNot(HaveOccurred())
+	err = drainController.SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
 }
 
 func TestAPIs(t *testing.T) {
@@ -116,6 +126,9 @@ var _ = BeforeSuite(func() {
 	// Go to project root directory
 	er := os.Chdir("..")
 	Expect(er).NotTo(HaveOccurred())
+
+	os.Setenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE", drainRequestorNS)
+	os.Setenv("DRAIN_CONTROLLER_REQUESTOR_ID", drainRequestorID)
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -214,6 +227,8 @@ var _ = BeforeSuite(func() {
 		DocaDriverImagesProvider: &mockImageProvider{},
 	}).SetupWithManager(k8sManager, testSetupLog)
 	Expect(err).ToNot(HaveOccurred())
+
+	setupDrainControllerWithManager(k8sManager)
 
 	go func() {
 		defer GinkgoRecover()
