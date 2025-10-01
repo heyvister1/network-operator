@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package controllers
+package drain
 
 import (
 	"cmp"
@@ -25,7 +25,6 @@ import (
 	"time"
 
 	maintenancev1alpha1 "github.com/Mellanox/maintenance-operator/api/v1alpha1"
-	"github.com/Mellanox/network-operator/api/v1alpha1"
 	"github.com/Mellanox/network-operator/pkg/consts"
 	"github.com/go-logr/logr"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/drain"
@@ -168,8 +167,7 @@ func NewRequestorIDPredicate(log logr.Logger, requestorID string) predicate.Func
 	})
 }
 
-func setDefaultNodeMaintenance(opts DrainRequestorOptions,
-	upgradePolicy *v1alpha1.DriverUpgradePolicySpec) {
+func setDefaultNodeMaintenance(opts DrainRequestorOptions) {
 	drainSpec := &maintenancev1alpha1.DrainSpec{
 		Force: true,
 		// TODO: Add pod selector
@@ -197,7 +195,7 @@ func NewDrainRequestor(k8sClient client.Client, log logr.Logger,
 		return nil, err
 	}
 	opts := GetRequestorOptsFromEnvs()
-	setDefaultNodeMaintenance(opts, nil)
+	setDefaultNodeMaintenance(opts)
 
 	return &DrainRequestor{
 		opts:            opts,
@@ -319,6 +317,7 @@ func (d *DrainRequestor) deleteNodeMaintenance(ctx context.Context,
 		if !k8serrors.IsNotFound(err) {
 			return err
 		}
+		return nil
 	}
 	if nm.Spec.RequestorID == d.opts.MaintenanceOPRequestorID {
 		d.log.V(consts.LogLevelInfo).Info("Deleting",
@@ -354,7 +353,7 @@ func GetDrainRequestorOpts(drainer drain.DrainInterface) DrainRequestorOptions {
 // GetRequestorEnvs returns requstor upgrade related options according to provided environment variables
 func GetRequestorOptsFromEnvs() DrainRequestorOptions {
 	opts := DrainRequestorOptions{}
-	if os.Getenv("MAINTENANCE_OPERATOR_ENABLED") == trueString {
+	if os.Getenv("DRAIN_CONTROLLER_ENABLED") == trueString {
 		opts.UseMaintenanceOperator = true
 	}
 	if os.Getenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE") != "" {

@@ -37,8 +37,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	drainer "github.com/Mellanox/network-operator/pkg/drain"
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	constants "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/drain"
@@ -58,7 +60,7 @@ type DrainReconcile struct {
 
 func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, recorder record.EventRecorder,
 	platformHelper platforms.Interface, log logr.Logger) (*DrainReconcile, error) {
-	drainer, err := NewDrainRequestor(client, log, platformHelper)
+	drainer, err := drainer.NewDrainRequestor(client, log, platformHelper)
 	if err != nil {
 		return nil, err
 	}
@@ -193,31 +195,90 @@ func (dr *DrainReconcile) ensureAnnotationExists(ctx context.Context, object cli
 	return value, true, nil
 }
 
+type DrainAnnotationPredicate struct {
+	predicate.Funcs
+}
+
+func (DrainAnnotationPredicate) Create(e event.CreateEvent) bool {
+	if e.Object == nil {
+		return false
+	}
+
+	if _, hasAnno := e.Object.GetAnnotations()[constants.NodeDrainAnnotation]; hasAnno {
+		return true
+	}
+	return false
+}
+
+func (DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
+	if e.ObjectOld == nil {
+		return false
+	}
+	if e.ObjectNew == nil {
+		return false
+	}
+
+	oldAnno, hasOldAnno := e.ObjectOld.GetAnnotations()[constants.NodeDrainAnnotation]
+	newAnno, hasNewAnno := e.ObjectNew.GetAnnotations()[constants.NodeDrainAnnotation]
+
+	if !hasOldAnno && hasNewAnno {
+		return true
+	}
+
+	return oldAnno != newAnno
+}
+
+type DrainStateAnnotationPredicate struct {
+	predicate.Funcs
+}
+
+func (DrainStateAnnotationPredicate) Create(e event.CreateEvent) bool {
+	return e.Object != nil
+}
+
+func (DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
+	if e.ObjectOld == nil {
+		return false
+	}
+	if e.ObjectNew == nil {
+		return false
+	}
+
+	oldAnno, hasOldAnno := e.ObjectOld.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
+	newAnno, hasNewAnno := e.ObjectNew.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
+
+	if !hasOldAnno || !hasNewAnno {
+		return true
+	}
+
+	return oldAnno != newAnno
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 	createUpdateEnqueue := handler.Funcs{
 		CreateFunc: func(c context.Context, e event.TypedCreateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
+				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
 				Name:      e.Object.GetName(),
 			}})
 		},
 		UpdateFunc: func(ctx context.Context, e event.TypedUpdateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
+				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
 				Name:      e.ObjectNew.GetName(),
 			}})
 		},
 	}
 
-	requestorOpts := GetRequestorOptsFromEnvs()
+	requestorOpts := drainer.GetRequestorOptsFromEnvs()
 	// Watch for spec and annotation changes
 	nodePredicates := builder.WithPredicates(DrainAnnotationPredicate{})
 	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{})
 	// TODO: Make sure there is once logger instance to be used for all the predicates
-	nodeMaintenancePredicates := NewConditionChangedPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
+	nodeMaintenancePredicates := drainer.NewConditionChangedPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
 		requestorOpts.MaintenanceOPRequestorID)
-	requestorIDPredicate := NewRequestorIDPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
+	requestorIDPredicate := drainer.NewRequestorIDPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
 		requestorOpts.MaintenanceOPRequestorID)
 	m := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{

@@ -506,7 +506,7 @@ func processItems(ctx context.Context, c client.Client,
 			node := &corev1.Node{}
 			Expect(c.Get(ctx, types.NamespacedName{Name: nm.Name}, node)).ToNot(HaveOccurred())
 			node.Spec.Unschedulable = false
-			Expect(c.Update(ctx, node)).NotTo(Succeed())
+			Expect(c.Update(ctx, node)).To(Succeed())
 			continue
 		}
 
