@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -228,7 +229,7 @@ func (d *DrainRequestor) DrainNode(ctx context.Context, node *corev1.Node, fullN
 	}
 
 	// create node maintenance object
-	nm, err := d.newNodeMaintenance(ctx, node.Name)
+	nm, err := d.createOrUpdateNodeMaintenance(ctx, node.Name)
 	if err != nil {
 		reqLogger.Error(err, "error creating node maintenance")
 		return false, err
@@ -255,7 +256,7 @@ func (d *DrainRequestor) CompleteDrainNode(ctx context.Context, node *corev1.Nod
 	// run the un cordon function on the node, by deleting node maintenance object
 	// once node maintenance object is actually deleted by maintenance operator,
 	// the node will be uncordoned.
-	err := d.deleteNodeMaintenance(ctx, nmName)
+	deleted, err := d.deleteOrUpdateNodeMaintenance(ctx, nmName)
 	if err != nil {
 		logger.Error(
 			err, "failed to delete NodeMaintenance, node uncordon failed", "nodeMaintenance",
@@ -271,11 +272,61 @@ func (d *DrainRequestor) CompleteDrainNode(ctx context.Context, node *corev1.Nod
 		return false, err
 	}
 	//logger.V(2).Info("CompleteDrainNode:()", "drainCompleted", completed)
-	logger.Info("CompleteDrainNode:()", "drainCompleted", completed)
-	return completed, nil
+	logger.Info("CompleteDrainNode:()", " nodeMaintenance deleted", deleted, "drainCompleted", completed)
+	return completed && deleted, nil
 }
 
-func (d *DrainRequestor) newNodeMaintenance(ctx context.Context, nodeName string) (*maintenancev1alpha1.NodeMaintenance, error) {
+func (d *DrainRequestor) createOrUpdateNodeMaintenance(ctx context.Context,
+	nodeName string) (*maintenancev1alpha1.NodeMaintenance, error) {
+
+	nm, err := d.checkForExistingNodeMaintenance(ctx, nodeName)
+	if err != nil {
+		return nil, err
+	}
+	// check for existing nodeMaintenance obj and if default prefix is used
+	if nm != nil && d.opts.NodeMaintenanceNamePrefix == DefaultNodeMaintenanceNamePrefix {
+		// if exists append requestorID to spec.AdditionalRequestors list
+		// check if object is owned by the requestor, if so skip re-creation
+		if nm.Spec.RequestorID == d.opts.MaintenanceOPRequestorID {
+			d.log.V(consts.LogLevelInfo).Info("nodeMaintenance already exists", nm.Name, "skip creation",
+				"requestorID", d.opts.MaintenanceOPRequestorID)
+			return nm, nil
+		}
+
+		// check if requestor is already in AdditionalRequestors
+		if slices.Contains(nm.Spec.AdditionalRequestors, d.opts.MaintenanceOPRequestorID) {
+			d.log.V(consts.LogLevelInfo).Info("requestor already in AdditionalRequestors list",
+				"requestorID", d.opts.MaintenanceOPRequestorID)
+			return nm, nil
+		}
+
+		d.log.V(consts.LogLevelInfo).Info("appending new requestor under AdditionalRequestors", "requestor",
+			d.opts.MaintenanceOPRequestorID, "nodeMaintenance", client.ObjectKeyFromObject(nm))
+		// create a deep copy of the original object before modifying it
+		originalNm := nm.DeepCopy()
+		// update AdditionalRequestor list
+		nm.Spec.AdditionalRequestors = append(nm.Spec.AdditionalRequestors, d.opts.MaintenanceOPRequestorID)
+		// using optimistic lock and patch command to avoid updating entire object and refraining of additionalRequestors list
+		// overwrite by other operators
+		patch := client.MergeFromWithOptions(originalNm, client.MergeFromWithOptimisticLock{})
+		err := d.k8sClient.Patch(ctx, nm, patch)
+		if err != nil {
+			d.log.V(consts.LogLevelError).Error(err, "failed to update nodeMaintenance")
+			return nil, err
+		}
+	} else {
+		nm, err = d.createNodeMaintenance(ctx, nodeName)
+		if err != nil {
+			d.log.V(consts.LogLevelError).Error(err, "failed to create nodeMaintenance")
+			return nil, err
+		}
+	}
+
+	return nm, nil
+}
+
+func (d *DrainRequestor) checkForExistingNodeMaintenance(ctx context.Context,
+	nodeName string) (*maintenancev1alpha1.NodeMaintenance, error) {
 	nm := &maintenancev1alpha1.NodeMaintenance{}
 	err := d.k8sClient.Get(ctx, types.NamespacedName{Name: nodeName,
 		Namespace: d.opts.MaintenanceOPRequestorNS},
@@ -285,16 +336,19 @@ func (d *DrainRequestor) newNodeMaintenance(ctx context.Context, nodeName string
 			return nm, err
 		}
 	}
-	// check if node maintenance object is already created
+	// check if node maintenance object is already exists
 	if nm.GetUID() != "" {
 		return nm, nil
 	}
+	return nil, nil
+}
 
-	d.log.V(consts.LogLevelInfo).Info("Creating", "node maintenance", nm, "namespace", nm.Namespace)
-	nm = defaultNodeMaintenance.DeepCopy()
+func (d *DrainRequestor) createNodeMaintenance(ctx context.Context, nodeName string) (*maintenancev1alpha1.NodeMaintenance, error) {
+	nm := defaultNodeMaintenance.DeepCopy()
 	nm.Name = d.getNodeMaintenanceName(nodeName)
+	d.log.V(consts.LogLevelInfo).Info("Creating", "node maintenance", nm, "namespace", nm.Namespace, "node", nodeName)
 	nm.Spec.NodeName = nodeName
-	err = d.k8sClient.Create(ctx, nm, &client.CreateOptions{})
+	err := d.k8sClient.Create(ctx, nm, &client.CreateOptions{})
 	if err != nil {
 		if !k8serrors.IsAlreadyExists(err) {
 			return nm, err
@@ -303,36 +357,69 @@ func (d *DrainRequestor) newNodeMaintenance(ctx context.Context, nodeName string
 	return nm, nil
 }
 
+func (d *DrainRequestor) deleteOrUpdateNodeMaintenance(ctx context.Context,
+	nodeName string) (bool, error) {
+	// check for existing nodeMaintenance obj
+	nm, err := d.checkForExistingNodeMaintenance(ctx, nodeName)
+	if err != nil {
+		return false, err
+	}
+	if nm == nil {
+		return true, nil
+	}
+
+	// check if object is owned by deleting requestor, if so proceed to deletion
+	if nm.Spec.RequestorID == d.opts.MaintenanceOPRequestorID {
+		d.log.V(consts.LogLevelInfo).Info("deleting node maintenance",
+			"nodeMaintenance", client.ObjectKeyFromObject(nm))
+		err := d.deleteNodeMaintenance(ctx, nm)
+		if err != nil {
+			d.log.V(consts.LogLevelWarning).Error(
+				err, "failed to delete NodeMaintenance, node uncordon failed", "nodeMaintenance",
+				client.ObjectKeyFromObject(nm))
+			return false, err
+		}
+		return true, nil
+	} else {
+		d.log.V(consts.LogLevelInfo).Info("removing requestor from node maintenance additional requestors list",
+			nm.GetName(), nm.GetNamespace())
+		// remove requestorID from spec.AdditionalRequestors list and patch the object
+		// check if requestorID is under additional requestors list
+		if slices.Contains(nm.Spec.AdditionalRequestors, d.opts.MaintenanceOPRequestorID) {
+			originalNm := nm.DeepCopy()
+			nm.Spec.AdditionalRequestors = slices.DeleteFunc(nm.Spec.AdditionalRequestors, func(id string) bool {
+				return id == d.opts.MaintenanceOPRequestorID
+			})
+			patch := client.MergeFromWithOptions(originalNm, client.MergeFromWithOptimisticLock{})
+			err := d.k8sClient.Patch(ctx, nm, patch)
+			if err != nil {
+				return false, fmt.Errorf("failed to remove requestor from additionalRequestors."+
+					"failed to patch nodeMaintenance %s. %w", client.ObjectKeyFromObject(nm), err)
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // deleteNodeMaintenance requests to delete nodeMaintenance obj
 func (d *DrainRequestor) deleteNodeMaintenance(ctx context.Context,
-	nodeName string) error {
+	nm *maintenancev1alpha1.NodeMaintenance) error {
 
-	nm := &maintenancev1alpha1.NodeMaintenance{}
-	err := d.k8sClient.Get(ctx, types.NamespacedName{Name: d.getNodeMaintenanceName(nodeName),
-		Namespace: d.opts.MaintenanceOPRequestorNS},
-		nm, &client.GetOptions{})
-	if err != nil {
-		// we expect returned error to be "NotFound", indicating that node has been already uncordoned
-		// by maintenance operator
-		if !k8serrors.IsNotFound(err) {
-			return err
-		}
-		return nil
-	}
 	if nm.Spec.RequestorID == d.opts.MaintenanceOPRequestorID {
 		d.log.V(consts.LogLevelInfo).Info("Deleting",
-			"nodeMaintenance", client.ObjectKeyFromObject(nm))
+			"nodeMaintenance", client.ObjectKeyFromObject(nm), "node", nm.Spec.NodeName)
 
-		// send deletion request assuming maintenance OP will handle actual obj deletion
+		// send deletion request to uncordon undelying node
 		// avoid deletion if deletion timestamp is already set
 		if nm.DeletionTimestamp == nil {
-			err = d.k8sClient.Delete(ctx, nm)
+			err := d.k8sClient.Delete(ctx, nm)
 			if err != nil {
 				return err
 			}
 		}
 	}
-	return err
+	return nil
 }
 
 // getNodeMaintenanceName returns expected name of the nodeMaintenance object

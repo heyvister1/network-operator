@@ -11,7 +11,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/workqueue"
@@ -27,7 +26,8 @@ import (
 )
 
 var (
-	drainRequestorID = "drain.requestor.com"
+	testRequestorID  = "secondary.requestor.com"
+	drainRequestorID = "primary-drain.requestor.com"
 	drainRequestorNS = "default"
 )
 
@@ -37,10 +37,10 @@ var _ = Describe("Drain Controller", Ordered, func() {
 		By("Setup maintennace controller mock")
 		mockNodeMaintenanceController(ctx, k8sClient, metav1.Condition{
 			Type:               maintenancev1alpha1.ConditionTypeReady,
-			Status:             v1.ConditionTrue,
+			Status:             metav1.ConditionTrue,
 			Reason:             maintenancev1alpha1.ConditionReasonReady,
 			Message:            "Maintenance completed successfully",
-			LastTransitionTime: v1.NewTime(time.Now()),
+			LastTransitionTime: metav1.NewTime(time.Now()),
 		})
 
 		err := k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"}})
@@ -110,6 +110,30 @@ var _ = Describe("Drain Controller", Ordered, func() {
 			expectNodeIsNotSchedulable(node)
 
 			simulateDaemonSetAnnotation(node, constants.DrainIdle)
+			expectNodeStateAnnotation(nodeState, constants.DrainIdle)
+			expectNodeIsSchedulable(node)
+		})
+
+		It("should drain single node on drain require, with additional requestor", func(ctx context.Context) {
+			node, nodeState := createNode(ctx, "node1")
+			_ = newNodeMaintenance(k8sClient, ctx, "node1", drainRequestorNS)
+
+			simulateDaemonSetAnnotation(node, constants.DrainRequired)
+			expectNodeStateAnnotation(nodeState, constants.DrainComplete)
+			expectNodeIsNotSchedulable(node)
+
+			nm := maintenancev1alpha1.NodeMaintenance{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name, Namespace: drainRequestorNS}, &nm)).ToNot(HaveOccurred())
+			expectNodeMaintenanceUpdate(node.Name, []string{drainRequestorID})
+
+			expectNodeStateAnnotation(nodeState, constants.DrainComplete)
+			simulateDaemonSetAnnotation(node, constants.DrainIdle)
+			expectNodeMaintenanceUpdate(node.Name, nil)
+			// expect node to be unschedulable
+			expectNodeIsNotSchedulable(node)
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: node.Name, Namespace: drainRequestorNS}, &nm)).ToNot(HaveOccurred())
+			Eventually(k8sClient.Delete(ctx, &nm)).ToNot(HaveOccurred())
 			expectNodeStateAnnotation(nodeState, constants.DrainIdle)
 			expectNodeIsSchedulable(node)
 		})
@@ -312,7 +336,7 @@ func expectNodeStateAnnotation(nodeState *sriovnetworkv1.SriovNetworkNodeState, 
 
 		g.Expect(utils.ObjectHasAnnotation(nodeState, constants.NodeStateDrainAnnotationCurrent, expectedAnnotationValue)).
 			To(BeTrue(),
-				"Node[%s] annotation[%s] == '%s'. Expected '%s'", nodeState.Name, constants.NodeDrainAnnotation, nodeState.GetLabels()[constants.NodeStateDrainAnnotationCurrent], expectedAnnotationValue)
+				"Node[%s] annotation[%s] == '%s'. Expected '%s'", nodeState.Name, constants.NodeDrainAnnotation, nodeState.GetAnnotations()[constants.NodeStateDrainAnnotationCurrent], expectedAnnotationValue)
 	}, "20s", "1s").Should(Succeed())
 }
 
@@ -358,6 +382,16 @@ func expectNodeIsSchedulable(node *corev1.Node) {
 			ToNot(HaveOccurred())
 
 		g.Expect(node.Spec.Unschedulable).To(BeFalse())
+	}, "20s", "1s").Should(Succeed())
+}
+
+func expectNodeMaintenanceUpdate(name string, expectedAnnotationValue []string) {
+	EventuallyWithOffset(1, func(g Gomega) {
+		nm := &maintenancev1alpha1.NodeMaintenance{}
+		g.Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: name, Namespace: drainRequestorNS}, nm)).
+			ToNot(HaveOccurred())
+
+		g.Expect(nm.Spec.AdditionalRequestors).To(Equal(expectedAnnotationValue))
 	}, "20s", "1s").Should(Succeed())
 }
 
@@ -486,7 +520,7 @@ func processItems(ctx context.Context, c client.Client,
 	nms *maintenancev1alpha1.NodeMaintenanceList, desiredCondition metav1.Condition) {
 	// Process each NodeMaintenance object
 	for _, nm := range nms.Items {
-		if nm.Spec.RequestorID != drainRequestorID {
+		if nm.Spec.RequestorID != drainRequestorID && nm.Spec.RequestorID != testRequestorID {
 			continue
 		}
 
@@ -534,4 +568,23 @@ func processItems(ctx context.Context, c client.Client,
 			Expect(c.Update(ctx, node)).To(Succeed())
 		}
 	}
+}
+
+func newNodeMaintenance(c client.Client, ctx context.Context,
+	name, namespace string) *maintenancev1alpha1.NodeMaintenance {
+	nm := &maintenancev1alpha1.NodeMaintenance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: maintenancev1alpha1.NodeMaintenanceSpec{
+			NodeName:    name,
+			RequestorID: testRequestorID,
+		},
+	}
+
+	nm.SetFinalizers([]string{maintenancev1alpha1.MaintenanceFinalizerName})
+	Expect(c.Create(ctx, nm)).To(Succeed())
+
+	return nm
 }

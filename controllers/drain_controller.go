@@ -136,7 +136,8 @@ func (dr *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if !nodeExist || !currentNodeStateExist || !desireNodeStateExist {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	reqLogger.V(consts.LogLevelInfo).Info("Drain annotations", "nodeAnnotation", nodeDrainAnnotation, "nodeStateAnnotation", nodeStateDrainAnnotationCurrent)
+	reqLogger.V(consts.LogLevelInfo).Info("Drain annotations", "nodeAnnotation", nodeDrainAnnotation,
+		"nodeStateAnnotation", nodeStateDrainAnnotationCurrent)
 
 	// Check the node request
 	if nodeDrainAnnotation == constants.DrainIdle {
@@ -197,6 +198,7 @@ func (dr *DrainReconcile) ensureAnnotationExists(ctx context.Context, object cli
 
 type DrainAnnotationPredicate struct {
 	predicate.Funcs
+	log logr.Logger
 }
 
 func (DrainAnnotationPredicate) Create(e event.CreateEvent) bool {
@@ -210,7 +212,7 @@ func (DrainAnnotationPredicate) Create(e event.CreateEvent) bool {
 	return false
 }
 
-func (DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
+func (d DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	if e.ObjectOld == nil {
 		return false
 	}
@@ -221,6 +223,7 @@ func (DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	oldAnno, hasOldAnno := e.ObjectOld.GetAnnotations()[constants.NodeDrainAnnotation]
 	newAnno, hasNewAnno := e.ObjectNew.GetAnnotations()[constants.NodeDrainAnnotation]
 
+	d.log.V(consts.LogLevelDebug).Info("Update", "oldAnno", oldAnno, "newAnno", newAnno)
 	if !hasOldAnno && hasNewAnno {
 		return true
 	}
@@ -230,13 +233,14 @@ func (DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 
 type DrainStateAnnotationPredicate struct {
 	predicate.Funcs
+	log logr.Logger
 }
 
 func (DrainStateAnnotationPredicate) Create(e event.CreateEvent) bool {
 	return e.Object != nil
 }
 
-func (DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
+func (d DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	if e.ObjectOld == nil {
 		return false
 	}
@@ -244,9 +248,10 @@ func (DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 		return false
 	}
 
-	oldAnno, hasOldAnno := e.ObjectOld.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
-	newAnno, hasNewAnno := e.ObjectNew.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
+	oldAnno, hasOldAnno := e.ObjectOld.GetAnnotations()[constants.NodeStateDrainAnnotationCurrent]
+	newAnno, hasNewAnno := e.ObjectNew.GetAnnotations()[constants.NodeStateDrainAnnotationCurrent]
 
+	d.log.V(consts.LogLevelDebug).Info("Update", "oldAnno", oldAnno, "newAnno", newAnno)
 	if !hasOldAnno || !hasNewAnno {
 		return true
 	}
@@ -274,7 +279,7 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 	requestorOpts := drainer.GetRequestorOptsFromEnvs()
 	// Watch for spec and annotation changes
 	nodePredicates := builder.WithPredicates(DrainAnnotationPredicate{})
-	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{})
+	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{log: mgr.GetLogger().WithValues("Function", "Drain")})
 	// TODO: Make sure there is once logger instance to be used for all the predicates
 	nodeMaintenancePredicates := drainer.NewConditionChangedPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
 		requestorOpts.MaintenanceOPRequestorID)
