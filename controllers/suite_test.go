@@ -129,8 +129,8 @@ var _ = BeforeSuite(func() {
 	er := os.Chdir("..")
 	Expect(er).NotTo(HaveOccurred())
 
-	os.Setenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE", drainRequestorNS)
-	os.Setenv("DRAIN_CONTROLLER_REQUESTOR_ID", drainRequestorID)
+	Expect(os.Setenv("DRAIN_CONTROLLER_REQUESTOR_NAMESPACE", drainRequestorNS)).NotTo(HaveOccurred())
+	Expect(os.Setenv("DRAIN_CONTROLLER_REQUESTOR_ID", drainRequestorID)).NotTo(HaveOccurred())
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -166,8 +166,6 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = openshiftconfigv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
-	//err = monitoringv1.AddToScheme(scheme.Scheme)
-	//Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 

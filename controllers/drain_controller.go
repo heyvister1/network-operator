@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package controllers
 
 import (
@@ -47,19 +48,21 @@ import (
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 )
 
+// DrainReconcile is a struct that contains drain controller configurations
 type DrainReconcile struct {
 	client.Client
-	Scheme      *runtime.Scheme
+	scheme      *runtime.Scheme
 	recorder    record.EventRecorder
 	drainer     drain.DrainInterface
-	MigrationCh chan struct{}
+	migrationCh chan struct{}
 
 	drainCheckMutex sync.Mutex
 	log             logr.Logger
 }
 
-func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, recorder record.EventRecorder,
-	platformHelper platforms.Interface, MigrationCh chan struct{}, log logr.Logger) (*DrainReconcile, error) {
+// NewDrainReconcileController creates a new DrainReconcile controller
+func NewDrainReconcileController(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder,
+	platformHelper platforms.Interface, migrationCh chan struct{}, log logr.Logger) (*DrainReconcile, error) {
 	drainer, err := drainer.NewDrainRequestor(client, log, platformHelper)
 	if err != nil {
 		return nil, err
@@ -67,10 +70,10 @@ func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, r
 
 	return &DrainReconcile{
 		client,
-		Scheme,
+		scheme,
 		recorder,
 		drainer,
-		MigrationCh,
+		migrationCh,
 		sync.Mutex{},
 		log}, nil
 }
@@ -87,7 +90,7 @@ func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, r
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.8.3/pkg/reconcile
 func (r *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	select {
-	case <-r.MigrationCh:
+	case <-r.migrationCh:
 	case <-ctx.Done():
 		return ctrl.Result{}, fmt.Errorf("canceled")
 	}
@@ -120,12 +123,14 @@ func (r *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	// create the drain state annotation if it doesn't exist in the sriovNetworkNodeState object
-	nodeStateDrainAnnotationCurrent, currentNodeStateExist, err := r.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotationCurrent)
+	nodeStateDrainAnnotationCurrent, currentNodeStateExist,
+		err := r.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotationCurrent)
 	if err != nil {
 		r.log.Error(err, "failed to ensure nodeStateDrainAnnotationCurrent")
 		return ctrl.Result{}, err
 	}
-	_, desireNodeStateExist, err := r.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotation)
+	_, desireNodeStateExist, err := r.ensureAnnotationExists(ctx, nodeNetworkState,
+		constants.NodeStateDrainAnnotation)
 	if err != nil {
 		r.log.Error(err, "failed to ensure nodeStateDrainAnnotation")
 		return ctrl.Result{}, err
@@ -171,15 +176,16 @@ func (r *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// this cover the case a node request to drain or reboot
 	if nodeDrainAnnotation == constants.DrainRequired ||
 		nodeDrainAnnotation == constants.RebootRequired {
-		return r.handleNodeDrainOrReboot(ctx, node, nodeNetworkState, nodeDrainAnnotation, nodeStateDrainAnnotationCurrent)
+		return r.handleNodeDrainOrReboot(ctx, node, nodeNetworkState,
+			nodeDrainAnnotation, nodeStateDrainAnnotationCurrent)
 	}
 
 	r.log.Error(nil, "unexpected node drain annotation")
 	return reconcile.Result{}, fmt.Errorf("unexpected node drain annotation")
 }
 
-func (dr *DrainReconcile) getObject(ctx context.Context, req ctrl.Request, object client.Object) (bool, error) {
-	err := dr.Get(ctx, req.NamespacedName, object)
+func (r *DrainReconcile) getObject(ctx context.Context, req ctrl.Request, object client.Object) (bool, error) {
+	err := r.Get(ctx, req.NamespacedName, object)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return false, nil
@@ -189,10 +195,11 @@ func (dr *DrainReconcile) getObject(ctx context.Context, req ctrl.Request, objec
 	return true, nil
 }
 
-func (dr *DrainReconcile) ensureAnnotationExists(ctx context.Context, object client.Object, key string) (string, bool, error) {
+func (r *DrainReconcile) ensureAnnotationExists(ctx context.Context,
+	object client.Object, key string) (string, bool, error) {
 	value, exist := object.GetAnnotations()[key]
 	if !exist {
-		err := utils.AnnotateObject(ctx, object, key, constants.DrainIdle, dr.Client)
+		err := utils.AnnotateObject(ctx, object, key, constants.DrainIdle, r.Client)
 		if err != nil {
 			return "", false, err
 		}
@@ -202,11 +209,13 @@ func (dr *DrainReconcile) ensureAnnotationExists(ctx context.Context, object cli
 	return value, true, nil
 }
 
+// DrainAnnotationPredicate contains the predicate for node drain annotation changes
 type DrainAnnotationPredicate struct {
 	predicate.Funcs
 	log logr.Logger
 }
 
+//nolint:dupl,revive
 func (DrainAnnotationPredicate) Create(e event.CreateEvent) bool {
 	if e.Object == nil {
 		return false
@@ -218,6 +227,7 @@ func (DrainAnnotationPredicate) Create(e event.CreateEvent) bool {
 	return false
 }
 
+//nolint:dupl,revive
 func (d DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	if e.ObjectOld == nil {
 		return false
@@ -237,15 +247,19 @@ func (d DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	return oldAnno != newAnno
 }
 
+// DrainStateAnnotationPredicate contains the predicate for
+// sriov node state drain annotation changes
 type DrainStateAnnotationPredicate struct {
 	predicate.Funcs
 	log logr.Logger
 }
 
+//nolint:revive
 func (DrainStateAnnotationPredicate) Create(e event.CreateEvent) bool {
 	return e.Object != nil
 }
 
+//nolint:revive
 func (d DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 	if e.ObjectOld == nil {
 		return false
@@ -266,17 +280,19 @@ func (d DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 	createUpdateEnqueue := handler.Funcs{
-		CreateFunc: func(_ context.Context, e event.TypedCreateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		CreateFunc: func(_ context.Context, e event.TypedCreateEvent[client.Object],
+			w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
+				Namespace: drainer.GetDrainRequestorOpts(r.drainer).MaintenanceOPRequestorNS,
 				Name:      e.Object.GetName(),
 			}})
 		},
-		UpdateFunc: func(_ context.Context, e event.TypedUpdateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		UpdateFunc: func(_ context.Context, e event.TypedUpdateEvent[client.Object],
+			w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
+				Namespace: drainer.GetDrainRequestorOpts(r.drainer).MaintenanceOPRequestorNS,
 				Name:      e.ObjectNew.GetName(),
 			}})
 		},
@@ -296,6 +312,7 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
 			LogConstructor: func(request *reconcile.Request) logr.Logger {
+				//nolint:lll
 				// Inspired by https://github.com/kubernetes-sigs/controller-runtime/blob/52b17917caa97ec546423867d9637f1787830f3e/pkg/builder/controller.go#L447
 				if req, ok := any(request).(*reconcile.Request); ok && req != nil {
 					logger = logger.WithValues("node", request.Name)
@@ -308,5 +325,5 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&maintenancev1alpha1.NodeMaintenance{}, createUpdateEnqueue,
 			builder.WithPredicates(nodeMaintenancePredicates, requestorIDPredicate))
 
-	return m.Complete(dr)
+	return m.Complete(r)
 }

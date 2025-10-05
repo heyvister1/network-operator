@@ -270,7 +270,6 @@ func setupUpgradeController(mgr ctrl.Manager, migrationChan chan struct{}) error
 }
 
 func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
-
 	requestorOpts := drain.GetRequestorOptsFromEnvs()
 	if !requestorOpts.UseMaintenanceOperator {
 		return nil
@@ -292,7 +291,7 @@ func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create drain kubernetes client")
-		os.Exit(1)
+		return err
 	}
 
 	platformsHelper, err := platforms.NewDefaultPlatformHelper()
@@ -305,12 +304,12 @@ func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
 		mgr.GetLogger().WithValues("Function", "Drain"))
 	if err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DrainReconcile")
-		os.Exit(1)
+		return err
 	}
 
 	if err = drainController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to setup controller with manager", "controller", "DrainReconcile")
-		os.Exit(1)
+		return err
 	}
 
 	return nil
