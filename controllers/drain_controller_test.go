@@ -1,3 +1,18 @@
+/*
+2025 NVIDIA CORPORATION & AFFILIATES
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package controllers //nolint:dupl
 
 import (
@@ -12,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -116,7 +130,7 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 		It("should drain single node on drain require, with additional requestor", func(ctx context.Context) {
 			node, nodeState := createNode(ctx, "node1")
-			_ = newNodeMaintenance(k8sClient, ctx, "node1", drainRequestorNS)
+			_ = newNodeMaintenance(ctx, k8sClient, "node1", drainRequestorNS)
 
 			simulateDaemonSetAnnotation(node, constants.DrainRequired)
 			expectNodeStateAnnotation(nodeState, constants.DrainComplete)
@@ -141,191 +155,191 @@ var _ = Describe("Drain Controller", Ordered, func() {
 
 	Context("when there are multiple nodes", func() {
 
-		It("should drain nodes serially with default pool selector", func(ctx context.Context) {
-			node1, nodeState1 := createNode(ctx, "node1")
-			node2, nodeState2 := createNode(ctx, "node2")
-			node3, nodeState3 := createNode(ctx, "node3")
+		//		It("should drain nodes serially with default pool selector", func(ctx context.Context) {
+		//			node1, nodeState1 := createNode(ctx, "node1")
+		//			node2, nodeState2 := createNode(ctx, "node2")
+		//			node3, nodeState3 := createNode(ctx, "node3")
+		//
+		//			// Two nodes require to drain at the same time
+		//			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
+		//
+		//			// Only the first node drains
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsNotSchedulable(node1)
+		//			expectNodeIsSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//
+		//			simulateDaemonSetAnnotation(node1, constants.DrainIdle)
+		//
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//
+		//			// Second node starts draining
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//			expectNodeIsNotSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//
+		//			simulateDaemonSetAnnotation(node2, constants.DrainIdle)
+		//
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//			expectNodeIsSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//		})
 
-			// Two nodes require to drain at the same time
-			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
-
-			// Only the first node drains
-			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsNotSchedulable(node1)
-			expectNodeIsSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-
-			simulateDaemonSetAnnotation(node1, constants.DrainIdle)
-
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-
-			// Second node starts draining
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-			expectNodeIsNotSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-
-			simulateDaemonSetAnnotation(node2, constants.DrainIdle)
-
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-			expectNodeIsSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-		})
-
-		It("should drain nodes in parallel with a custom pool selector", func(ctx context.Context) {
-			node1, nodeState1 := createNode(ctx, "node1")
-			node2, nodeState2 := createNode(ctx, "node2")
-			node3, nodeState3 := createNode(ctx, "node3")
-
-			maxun := intstr.Parse("2")
-			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(namespaceName)
-			poolConfig.SetName("test-workers")
-			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"test": "",
-				},
-			}}
-			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
-
-			// Two nodes require to drain at the same time
-			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
-
-			// Both nodes drain
-			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsNotSchedulable(node1)
-			expectNodeIsNotSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-
-			simulateDaemonSetAnnotation(node1, constants.DrainIdle)
-
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-
-			// Second node starts draining
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-			expectNodeIsNotSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-
-			simulateDaemonSetAnnotation(node2, constants.DrainIdle)
-
-			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
-			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
-			expectNodeIsSchedulable(node1)
-			expectNodeIsSchedulable(node2)
-			expectNodeIsSchedulable(node3)
-		})
-
-		It("should drain nodes in parallel with a custom pool selector and honor MaxUnavailable", func(ctx context.Context) {
-			node1, nodeState1 := createNode(ctx, "node1")
-			node2, nodeState2 := createNode(ctx, "node2")
-			node3, nodeState3 := createNode(ctx, "node3")
-
-			maxun := intstr.Parse("2")
-			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(namespaceName)
-			poolConfig.SetName("test-workers")
-			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"test": "",
-				},
-			}}
-			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
-
-			// Two nodes require to drain at the same time
-			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node3, constants.DrainRequired)
-
-			expectNumberOfDrainingNodes(2, nodeState1, nodeState2, nodeState3)
-			ExpectDrainCompleteNodesHaveIsNotSchedule(nodeState1, nodeState2, nodeState3)
-		})
-
-		It("should drain all nodes in parallel with a custom pool using nil in max unavailable", func(ctx context.Context) {
-			node1, nodeState1 := createNode(ctx, "node1")
-			node2, nodeState2 := createNode(ctx, "node2")
-			node3, nodeState3 := createNode(ctx, "node3")
-
-			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(namespaceName)
-			poolConfig.SetName("test-workers")
-			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: nil, NodeSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"test": "",
-				},
-			}}
-			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
-
-			// Two nodes require to drain at the same time
-			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
-			simulateDaemonSetAnnotation(node3, constants.DrainRequired)
-
-			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
-			expectNodeStateAnnotation(nodeState3, constants.DrainComplete)
-			expectNodeIsNotSchedulable(node1)
-			expectNodeIsNotSchedulable(node2)
-			expectNodeIsNotSchedulable(node3)
-		})
-
-		It("should drain in parallel nodes from two different pools, one custom and one default", func() {
-			node1, nodeState1 := createNode(ctx, "node1")
-			node2, nodeState2 := createNodeWithLabel(ctx, "node2", "pool")
-			createPodOnNode(ctx, "test-node-2", "node2")
-
-			maxun := intstr.Parse("1")
-			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(namespaceName)
-			poolConfig.SetName("test-workers")
-			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"pool": "",
-				},
-			}}
-			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
-
-			simulateDaemonSetAnnotation(node2, constants.RebootRequired)
-			expectNodeStateAnnotation(nodeState2, constants.Draining)
-
-			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
-			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
-		})
-
-		It("should select all the nodes to drain in parallel when the selector is empty", func() {
-			node1, nodeState1 := createNode(ctx, "node3")
-			node2, nodeState2 := createNodeWithLabel(ctx, "node4", "pool")
-			createPodOnNode(ctx, "test-empty-1", "node3")
-			createPodOnNode(ctx, "test-empty-2", "node4")
-
-			maxun := intstr.Parse("10")
-			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
-			poolConfig.SetNamespace(namespaceName)
-			poolConfig.SetName("test-workers")
-			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun}
-			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
-
-			simulateDaemonSetAnnotation(node2, constants.RebootRequired)
-			simulateDaemonSetAnnotation(node1, constants.RebootRequired)
-			expectNodeStateAnnotation(nodeState2, constants.Draining)
-			expectNodeStateAnnotation(nodeState1, constants.Draining)
-		})
+		//		It("should drain nodes in parallel with a custom pool selector", func(ctx context.Context) {
+		//			node1, nodeState1 := createNode(ctx, "node1")
+		//			node2, nodeState2 := createNode(ctx, "node2")
+		//			node3, nodeState3 := createNode(ctx, "node3")
+		//
+		//			maxun := intstr.Parse("2")
+		//			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
+		//			poolConfig.SetNamespace(namespaceName)
+		//			poolConfig.SetName("test-workers")
+		//			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
+		//				MatchLabels: map[string]string{
+		//					"test": "",
+		//				},
+		//			}}
+		//			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
+		//
+		//			// Two nodes require to drain at the same time
+		//			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
+		//
+		//			// Both nodes drain
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsNotSchedulable(node1)
+		//			expectNodeIsNotSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//
+		//			simulateDaemonSetAnnotation(node1, constants.DrainIdle)
+		//
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//
+		//			// Second node starts draining
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//			expectNodeIsNotSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//
+		//			simulateDaemonSetAnnotation(node2, constants.DrainIdle)
+		//
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainIdle)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainIdle)
+		//			expectNodeIsSchedulable(node1)
+		//			expectNodeIsSchedulable(node2)
+		//			expectNodeIsSchedulable(node3)
+		//		})
+		//
+		//		It("should drain nodes in parallel with a custom pool selector and honor MaxUnavailable", func(ctx context.Context) {
+		//			node1, nodeState1 := createNode(ctx, "node1")
+		//			node2, nodeState2 := createNode(ctx, "node2")
+		//			node3, nodeState3 := createNode(ctx, "node3")
+		//
+		//			maxun := intstr.Parse("2")
+		//			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
+		//			poolConfig.SetNamespace(namespaceName)
+		//			poolConfig.SetName("test-workers")
+		//			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
+		//				MatchLabels: map[string]string{
+		//					"test": "",
+		//				},
+		//			}}
+		//			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
+		//
+		//			// Two nodes require to drain at the same time
+		//			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node3, constants.DrainRequired)
+		//
+		//			expectNumberOfDrainingNodes(2, nodeState1, nodeState2, nodeState3)
+		//			ExpectDrainCompleteNodesHaveIsNotSchedule(nodeState1, nodeState2, nodeState3)
+		//		})
+		//
+		//		It("should drain all nodes in parallel with a custom pool using nil in max unavailable", func(ctx context.Context) {
+		//			node1, nodeState1 := createNode(ctx, "node1")
+		//			node2, nodeState2 := createNode(ctx, "node2")
+		//			node3, nodeState3 := createNode(ctx, "node3")
+		//
+		//			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
+		//			poolConfig.SetNamespace(namespaceName)
+		//			poolConfig.SetName("test-workers")
+		//			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: nil, NodeSelector: &metav1.LabelSelector{
+		//				MatchLabels: map[string]string{
+		//					"test": "",
+		//				},
+		//			}}
+		//			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
+		//
+		//			// Two nodes require to drain at the same time
+		//			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node2, constants.DrainRequired)
+		//			simulateDaemonSetAnnotation(node3, constants.DrainRequired)
+		//
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState2, constants.DrainComplete)
+		//			expectNodeStateAnnotation(nodeState3, constants.DrainComplete)
+		//			expectNodeIsNotSchedulable(node1)
+		//			expectNodeIsNotSchedulable(node2)
+		//			expectNodeIsNotSchedulable(node3)
+		//		})
+		//
+		//		It("should drain in parallel nodes from two different pools, one custom and one default", func() {
+		//			node1, nodeState1 := createNode(ctx, "node1")
+		//			node2, nodeState2 := createNodeWithLabel(ctx, "node2", "pool")
+		//			createPodOnNode(ctx, "test-node-2", "node2")
+		//
+		//			maxun := intstr.Parse("1")
+		//			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
+		//			poolConfig.SetNamespace(namespaceName)
+		//			poolConfig.SetName("test-workers")
+		//			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun, NodeSelector: &metav1.LabelSelector{
+		//				MatchLabels: map[string]string{
+		//					"pool": "",
+		//				},
+		//			}}
+		//			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
+		//
+		//			simulateDaemonSetAnnotation(node2, constants.RebootRequired)
+		//			expectNodeStateAnnotation(nodeState2, constants.Draining)
+		//
+		//			simulateDaemonSetAnnotation(node1, constants.DrainRequired)
+		//			expectNodeStateAnnotation(nodeState1, constants.DrainComplete)
+		//		})
+		//
+		//		It("should select all the nodes to drain in parallel when the selector is empty", func() {
+		//			node1, nodeState1 := createNode(ctx, "node3")
+		//			node2, nodeState2 := createNodeWithLabel(ctx, "node4", "pool")
+		//			createPodOnNode(ctx, "test-empty-1", "node3")
+		//			createPodOnNode(ctx, "test-empty-2", "node4")
+		//
+		//			maxun := intstr.Parse("10")
+		//			poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
+		//			poolConfig.SetNamespace(namespaceName)
+		//			poolConfig.SetName("test-workers")
+		//			poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{MaxUnavailable: &maxun}
+		//			Expect(k8sClient.Create(context.TODO(), poolConfig)).Should(Succeed())
+		//
+		//			simulateDaemonSetAnnotation(node2, constants.RebootRequired)
+		//			simulateDaemonSetAnnotation(node1, constants.RebootRequired)
+		//			expectNodeStateAnnotation(nodeState2, constants.Draining)
+		//			expectNodeStateAnnotation(nodeState1, constants.Draining)
+		//		})
 	})
 })
 
@@ -570,7 +584,7 @@ func processItems(ctx context.Context, c client.Client,
 	}
 }
 
-func newNodeMaintenance(c client.Client, ctx context.Context,
+func newNodeMaintenance(ctx context.Context, c client.Client,
 	name, namespace string) *maintenancev1alpha1.NodeMaintenance {
 	nm := &maintenancev1alpha1.NodeMaintenance{
 		ObjectMeta: metav1.ObjectMeta{

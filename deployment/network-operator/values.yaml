@@ -276,6 +276,10 @@ operator:
     requestorID: "nvidia.network.operator"
     nodeMaintenanceNamePrefix: "network-operator"
     nodeMaintenanceNamespace: default
+    useDrainControllerRequestor: false
+    drainControllerRequestorID: "nvidia.drain-controller"
+    drainControllerRequestorNamespace: default
+    drainControllerNodeMaintenanceNamePrefix: ""
   # -- Enable the use of Driver ToolKit to compile DOCA-OFED Drivers (OpenShift only).
   useDTK: true
   admissionController:

@@ -49,6 +49,7 @@ import (
 	"github.com/Mellanox/network-operator/controllers"
 	"github.com/Mellanox/network-operator/pkg/clustertype"
 	"github.com/Mellanox/network-operator/pkg/docadriverimages"
+	"github.com/Mellanox/network-operator/pkg/drain"
 	"github.com/Mellanox/network-operator/pkg/migrate"
 	"github.com/Mellanox/network-operator/pkg/staticconfig"
 	"github.com/Mellanox/network-operator/version"
@@ -269,10 +270,15 @@ func setupUpgradeController(mgr ctrl.Manager, migrationChan chan struct{}) error
 }
 
 func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
+
+	requestorOpts := drain.GetRequestorOptsFromEnvs()
+	if !requestorOpts.UseMaintenanceOperator {
+		return nil
+	}
 	restConfig := ctrl.GetConfigOrDie()
 	// Initial global info
 	vars.Config = restConfig
-	vars.Namespace = "nvidia-network-operator"
+	vars.Namespace = requestorOpts.SriovNodeStateNamespace
 	// we need a client that doesn't use the local cache for the objects
 	drainKClient, err := client.New(restConfig, client.Options{
 		Scheme: scheme,
@@ -284,7 +290,6 @@ func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
 			},
 		},
 	})
-	_ = drainKClient
 	if err != nil {
 		setupLog.Error(err, "unable to create drain kubernetes client")
 		os.Exit(1)
@@ -292,10 +297,11 @@ func setupDrainController(mgr ctrl.Manager, migrationChan chan struct{}) error {
 
 	platformsHelper, err := platforms.NewDefaultPlatformHelper()
 	drainController, err := controllers.NewDrainReconcileController(
-		drainKClient, /*mgr.GetClient()*/
+		drainKClient,
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("SR-IOV operator"),
 		platformsHelper,
+		migrationChan,
 		mgr.GetLogger().WithValues("Function", "Drain"))
 	if err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DrainReconcile")

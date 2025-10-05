@@ -80,7 +80,8 @@ func (d *mockImageProvider) TagExists(_ string) (bool, error) {
 
 func (d *mockImageProvider) SetImageSpec(*mellanoxcomv1alpha1.ImageSpec) {}
 
-func setupDrainControllerWithManager(k8sManager manager.Manager) {
+func setupDrainControllerWithManager(k8sManager manager.Manager,
+	migrationCompletionChan chan struct{}) {
 	t := GinkgoT()
 	mockCtrl := gomock.NewController(t)
 	platformHelper := mock_platforms.NewMockInterface(mockCtrl)
@@ -106,6 +107,7 @@ func setupDrainControllerWithManager(k8sManager manager.Manager) {
 		k8sManager.GetScheme(),
 		k8sManager.GetEventRecorderFor("operator"),
 		platformHelper,
+		migrationCompletionChan,
 		k8sManager.GetLogger().WithValues("Function", "Drain"))
 	Expect(err).ToNot(HaveOccurred())
 	err = drainController.SetupWithManager(k8sManager)
@@ -228,7 +230,7 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager, testSetupLog)
 	Expect(err).ToNot(HaveOccurred())
 
-	setupDrainControllerWithManager(k8sManager)
+	setupDrainControllerWithManager(k8sManager, migrationCompletionChan)
 
 	go func() {
 		defer GinkgoRecover()

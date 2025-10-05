@@ -1,11 +1,11 @@
 /*
-Copyright 2025 NVIDIA
+2025 NVIDIA CORPORATION & AFFILIATES
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
 package controllers
 
 import (
@@ -36,7 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -51,15 +49,17 @@ import (
 
 type DrainReconcile struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	recorder record.EventRecorder
-	drainer  drain.DrainInterface
+	Scheme      *runtime.Scheme
+	recorder    record.EventRecorder
+	drainer     drain.DrainInterface
+	MigrationCh chan struct{}
 
 	drainCheckMutex sync.Mutex
+	log             logr.Logger
 }
 
 func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, recorder record.EventRecorder,
-	platformHelper platforms.Interface, log logr.Logger) (*DrainReconcile, error) {
+	platformHelper platforms.Interface, MigrationCh chan struct{}, log logr.Logger) (*DrainReconcile, error) {
 	drainer, err := drainer.NewDrainRequestor(client, log, platformHelper)
 	if err != nil {
 		return nil, err
@@ -70,7 +70,9 @@ func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, r
 		Scheme,
 		recorder,
 		drainer,
-		sync.Mutex{}}, nil
+		MigrationCh,
+		sync.Mutex{},
+		log}, nil
 }
 
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
@@ -83,52 +85,56 @@ func NewDrainReconcileController(client client.Client, Scheme *runtime.Scheme, r
 // move the current state of the cluster closer to the desired state.
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.8.3/pkg/reconcile
-func (dr *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	ctx = context.WithValue(ctx, "logger", log.FromContext(ctx))
-	reqLogger := log.FromContext(ctx).WithName("Drain Reconcile")
+func (r *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	select {
+	case <-r.MigrationCh:
+	case <-ctx.Done():
+		return ctrl.Result{}, fmt.Errorf("canceled")
+	}
+	r.log.WithName("Drain Reconcile")
 
 	req.Namespace = vars.Namespace
 
 	// get node object
 	node := &corev1.Node{}
-	found, err := dr.getObject(ctx, req, node)
+	found, err := r.getObject(ctx, req, node)
 	if err != nil {
-		reqLogger.Error(err, "failed to get node object")
+		r.log.Error(err, "failed to get node object")
 		return ctrl.Result{}, err
 	}
 	if !found {
-		reqLogger.Info("node not found don't, requeue the request", "node", req.Name)
+		r.log.Info("node not found don't, requeue the request", "node", req.Name)
 		return ctrl.Result{}, nil
 	}
 
 	// get sriovNodeNodeState object
 	nodeNetworkState := &sriovnetworkv1.SriovNetworkNodeState{}
-	found, err = dr.getObject(ctx, req, nodeNetworkState)
+	found, err = r.getObject(ctx, req, nodeNetworkState)
 	if err != nil {
-		reqLogger.Error(err, "failed to get sriovNetworkNodeState object")
+		r.log.Error(err, "failed to get sriovNetworkNodeState object")
 		return ctrl.Result{}, err
 	}
 	if !found {
-		reqLogger.Info("sriovNetworkNodeState not found, don't requeue the request")
+		r.log.Info("sriovNetworkNodeState not found, don't requeue the request")
 		return ctrl.Result{}, nil
 	}
 
 	// create the drain state annotation if it doesn't exist in the sriovNetworkNodeState object
-	nodeStateDrainAnnotationCurrent, currentNodeStateExist, err := dr.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotationCurrent)
+	nodeStateDrainAnnotationCurrent, currentNodeStateExist, err := r.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotationCurrent)
 	if err != nil {
-		reqLogger.Error(err, "failed to ensure nodeStateDrainAnnotationCurrent")
+		r.log.Error(err, "failed to ensure nodeStateDrainAnnotationCurrent")
 		return ctrl.Result{}, err
 	}
-	_, desireNodeStateExist, err := dr.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotation)
+	_, desireNodeStateExist, err := r.ensureAnnotationExists(ctx, nodeNetworkState, constants.NodeStateDrainAnnotation)
 	if err != nil {
-		reqLogger.Error(err, "failed to ensure nodeStateDrainAnnotation")
+		r.log.Error(err, "failed to ensure nodeStateDrainAnnotation")
 		return ctrl.Result{}, err
 	}
 
 	// create the drain state annotation if it doesn't exist in the node object
-	nodeDrainAnnotation, nodeExist, err := dr.ensureAnnotationExists(ctx, node, constants.NodeDrainAnnotation)
+	nodeDrainAnnotation, nodeExist, err := r.ensureAnnotationExists(ctx, node, constants.NodeDrainAnnotation)
 	if err != nil {
-		reqLogger.Error(err, "failed to ensure nodeStateDrainAnnotation")
+		r.log.Error(err, "failed to ensure nodeStateDrainAnnotation")
 		return ctrl.Result{}, err
 	}
 
@@ -136,7 +142,7 @@ func (dr *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if !nodeExist || !currentNodeStateExist || !desireNodeStateExist {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	reqLogger.V(consts.LogLevelInfo).Info("Drain annotations", "nodeAnnotation", nodeDrainAnnotation,
+	r.log.V(consts.LogLevelInfo).Info("Drain annotations", "nodeAnnotation", nodeDrainAnnotation,
 		"nodeStateAnnotation", nodeStateDrainAnnotationCurrent)
 
 	// Check the node request
@@ -146,7 +152,7 @@ func (dr *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// node request to be on idle and the currect state is idle
 		// we don't do anything
 		if nodeStateDrainAnnotationCurrent == constants.DrainIdle {
-			reqLogger.Info("node and nodeState are on idle nothing todo")
+			r.log.Info("node and nodeState are on idle nothing todo")
 			return reconcile.Result{}, nil
 		}
 
@@ -158,17 +164,17 @@ func (dr *DrainReconcile) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		//  doesn't need to drain anymore, so we can stop the drain
 		if nodeStateDrainAnnotationCurrent == constants.DrainComplete ||
 			nodeStateDrainAnnotationCurrent == constants.Draining {
-			return dr.handleNodeIdleNodeStateDrainingOrCompleted(ctx, node, nodeNetworkState)
+			return r.handleNodeIdleNodeStateDrainingOrCompleted(ctx, node, nodeNetworkState)
 		}
 	}
 
 	// this cover the case a node request to drain or reboot
 	if nodeDrainAnnotation == constants.DrainRequired ||
 		nodeDrainAnnotation == constants.RebootRequired {
-		return dr.handleNodeDrainOrReboot(ctx, node, nodeNetworkState, nodeDrainAnnotation, nodeStateDrainAnnotationCurrent)
+		return r.handleNodeDrainOrReboot(ctx, node, nodeNetworkState, nodeDrainAnnotation, nodeStateDrainAnnotationCurrent)
 	}
 
-	reqLogger.Error(nil, "unexpected node drain annotation")
+	r.log.Error(nil, "unexpected node drain annotation")
 	return reconcile.Result{}, fmt.Errorf("unexpected node drain annotation")
 }
 
@@ -262,13 +268,13 @@ func (d DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 // SetupWithManager sets up the controller with the Manager.
 func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 	createUpdateEnqueue := handler.Funcs{
-		CreateFunc: func(c context.Context, e event.TypedCreateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		CreateFunc: func(_ context.Context, e event.TypedCreateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
 				Name:      e.Object.GetName(),
 			}})
 		},
-		UpdateFunc: func(ctx context.Context, e event.TypedUpdateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		UpdateFunc: func(_ context.Context, e event.TypedUpdateEvent[client.Object], w workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			w.Add(reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: drainer.GetDrainRequestorOpts(dr.drainer).MaintenanceOPRequestorNS,
 				Name:      e.ObjectNew.GetName(),
@@ -276,20 +282,20 @@ func (dr *DrainReconcile) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	}
 
+	logger := mgr.GetLogger().WithValues("Function", "Drain")
 	requestorOpts := drainer.GetRequestorOptsFromEnvs()
 	// Watch for spec and annotation changes
 	nodePredicates := builder.WithPredicates(DrainAnnotationPredicate{})
-	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{log: mgr.GetLogger().WithValues("Function", "Drain")})
+	nodeStatePredicates := builder.WithPredicates(DrainStateAnnotationPredicate{log: logger})
 	// TODO: Make sure there is once logger instance to be used for all the predicates
-	nodeMaintenancePredicates := drainer.NewConditionChangedPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
+	nodeMaintenancePredicates := drainer.NewConditionChangedPredicate(logger,
 		requestorOpts.MaintenanceOPRequestorID)
-	requestorIDPredicate := drainer.NewRequestorIDPredicate(mgr.GetLogger().WithValues("Function", "Drain"),
+	requestorIDPredicate := drainer.NewRequestorIDPredicate(logger,
 		requestorOpts.MaintenanceOPRequestorID)
 	m := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
 			LogConstructor: func(request *reconcile.Request) logr.Logger {
-				logger := mgr.GetLogger().WithValues("Function", "Drain")
 				// Inspired by https://github.com/kubernetes-sigs/controller-runtime/blob/52b17917caa97ec546423867d9637f1787830f3e/pkg/builder/controller.go#L447
 				if req, ok := any(request).(*reconcile.Request); ok && req != nil {
 					logger = logger.WithValues("node", request.Name)
